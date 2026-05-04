@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>水墨丹青 - 核心战斗原型</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a1a;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #game-container {
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 0 40px rgba(0,0,0,0.5);
+    }
+    #paintCanvas {
+      position: absolute;
+      top: 0; left: 0;
+      z-index: 1;
+      pointer-events: none;
+    }
+    #gameCanvas {
+      position: relative;
+      z-index: 2;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      touch-action: none;
+    }
+    #ui-overlay {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 5;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="paintCanvas"></canvas>
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-overlay"></div>
+  </div>
+  <div id="error-box" style="display:none;position:fixed;top:20px;left:20px;right:20px;background:#c43a31;color:#fff;padding:16px;border-radius:8px;font-family:monospace;font-size:13px;z-index:999;white-space:pre-wrap;word-break:break-all;"></div>
+  <script>
+    window.onerror = function(msg, url, line, col, err) {
+      var el = document.getElementById('error-box');
+      el.style.display = 'block';
+      el.textContent = '错误: ' + msg + '\n位置: ' + line + '行' + '\n文件: ' + (url || '').split('/').pop();
+      return true;
+    };
+  </script>
+  <script src="game.js?v=202605041700"></script>
+</body>
+</html>
