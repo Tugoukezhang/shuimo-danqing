@@ -9,22 +9,21 @@
   <title>水墨丹青 - 核心战斗原型</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
+    html, body {
+      width: 100%; height: 100%;
       background: #1a1a1a;
       display: flex;
       justify-content: center;
       align-items: center;
-      min-height: 100vh;
       overflow: hidden;
       touch-action: none;
       -webkit-user-select: none;
       user-select: none;
     }
+    /* game-container作为定位锚点，尺寸由JS设为和Canvas显示尺寸一致 */
     #game-container {
       position: relative;
-      border-radius: 12px;
       overflow: hidden;
-      box-shadow: 0 0 40px rgba(0,0,0,0.5);
     }
     #paintCanvas {
       position: absolute;
@@ -37,10 +36,7 @@
       z-index: 2;
       touch-action: none;
     }
-    canvas {
-      display: block;
-      touch-action: none;
-    }
+    canvas { display: block; touch-action: none; }
     #ui-overlay {
       position: absolute;
       top: 0; left: 0; width: 100%; height: 100%;
@@ -64,6 +60,6 @@
       return true;
     };
   </script>
-  <script src="game.js?v=202605041700"></script>
+  <script src="game.js?v=202605051200"></script>
 </body>
 </html>

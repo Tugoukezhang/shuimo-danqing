@@ -228,18 +228,30 @@ const canvas = document.getElementById('gameCanvas');
 const paintCanvasEl = document.getElementById('paintCanvas');
 const uiOverlay = document.getElementById('ui-overlay');
 const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+// 计算缩放：390×844等比适配窗口
+function calcDisplaySize() {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const scale = Math.min(vw / W, vh / H);
+  return { dw: W * scale, dh: H * scale, scale };
+}
+const { dw: initDW, dh: initDH } = calcDisplaySize();
+
+// Canvas内部分辨率（高清）
 canvas.width = W * dpr;
 canvas.height = H * dpr;
-canvas.style.width = W + 'px';
-canvas.style.height = H + 'px';
+// Canvas CSS显示尺寸（等比缩放适配窗口）
+canvas.style.width = initDW + 'px';
+canvas.style.height = initDH + 'px';
 const ctx = canvas.getContext('2d');
 ctx.scale(dpr, dpr);
 
-// 涂色画布 — 命中时累积墨迹，爆发时晕染清空
+// 涂色画布
 paintCanvasEl.width = W * dpr;
 paintCanvasEl.height = H * dpr;
-paintCanvasEl.style.width = W + 'px';
-paintCanvasEl.style.height = H + 'px';
+paintCanvasEl.style.width = initDW + 'px';
+paintCanvasEl.style.height = initDH + 'px';
 const paintCtx = paintCanvasEl.getContext('2d');
 paintCtx.scale(dpr, dpr);
 
@@ -295,6 +307,81 @@ const gameSave = {
   }
 };
 gameSave.load();
+
+// ==================== 资源系统 ====================
+const RES_KEY = 'inkMaster_resources';
+const resources = {
+  moYu: 100,       // 墨玉（高级货币，≈钻石）— 新手送100
+  moJing: 500,     // 墨晶（中级货币，≈金币）
+  lingMo: 200,     // 灵墨（低级货币，养成用）
+  gachaTicket: 10, // 墨韵券（抽卡券）— 新手送10
+  // 离线挂机时间戳
+  lastOnline: Date.now(),
+  // 挂机收益上限（12小时）
+  idleMaxHours: 12,
+  // 每小时挂机产出
+  idlePerHour: { moJing: 30, lingMo: 10 },
+
+  load() {
+    try {
+      const d = JSON.parse(localStorage.getItem(RES_KEY));
+      if (d) {
+        this.moYu = d.moYu ?? 100;
+        this.moJing = d.moJing ?? 500;
+        this.lingMo = d.lingMo ?? 200;
+        this.gachaTicket = d.gachaTicket ?? 10;
+        this.lastOnline = d.lastOnline ?? Date.now();
+      }
+    } catch(e) {}
+  },
+  save() {
+    try {
+      localStorage.setItem(RES_KEY, JSON.stringify({
+        moYu: this.moYu, moJing: this.moJing,
+        lingMo: this.lingMo, gachaTicket: this.gachaTicket,
+        lastOnline: Date.now(),
+      }));
+    } catch(e) {}
+  },
+  // 计算离线挂机收益
+  calcIdleReward() {
+    const now = Date.now();
+    const elapsedMs = now - this.lastOnline;
+    const elapsedHours = Math.min(elapsedMs / 3600000, this.idleMaxHours);
+    return {
+      moJing: Math.floor(elapsedHours * this.idlePerHour.moJing),
+      lingMo: Math.floor(elapsedHours * this.idlePerHour.lingMo),
+      hours: elapsedHours,
+    };
+  },
+  // 领取挂机收益
+  claimIdleReward() {
+    const reward = this.calcIdleReward();
+    if (reward.moJing <= 0 && reward.lingMo <= 0) return null;
+    this.moJing += reward.moJing;
+    this.lingMo += reward.lingMo;
+    this.lastOnline = Date.now();
+    this.save();
+    return reward;
+  },
+  // 检查是否足够
+  canAfford(costs) {
+    for (const [k, v] of Object.entries(costs)) {
+      if ((this[k] || 0) < v) return false;
+    }
+    return true;
+  },
+  // 扣除资源
+  spend(costs) {
+    if (!this.canAfford(costs)) return false;
+    for (const [k, v] of Object.entries(costs)) {
+      this[k] -= v;
+    }
+    this.save();
+    return true;
+  },
+};
+resources.load();
 
 // ==================== 画灵角色系统 ====================
 // 3个画灵，各有独特属性/被动/爆发技能
@@ -362,8 +449,16 @@ const HEROES = [
   },
 ];
 
-// 当前选择的画灵（默认青岚）
+// 当前选择的画灵（默认青岚）— 仅非战斗时使用
 let currentHero = HEROES[0];
+
+// 战斗中获取当前操控画灵（3人队系统）
+function getActiveHero() {
+  if (state.party.length === 0) return HEROES[0];
+  const slot = state.party[state.activeSlot];
+  if (!slot) return HEROES[0];
+  return HEROES[slot.heroIndex];
+}
 
 // ==================== 共鸣等级系统 ====================
 // 全角色共享养成 — 杀敌获得经验，升级后属性加成
@@ -410,18 +505,27 @@ const resonance = {
 resonance.load();
 
 // ==================== 屏幕状态 ====================
-// screen: 'title' | 'select' | 'heroSelect' | 'battle' | 'result'
+// screen: 'title' | 'lobby' | 'select' | 'heroSelect' | 'battle' | 'result' | 'heroList' | 'heroDetail' | 'gacha' | 'gachaResult' | 'shop' | 'settings'
 const screenState = {
   current: 'title',      // 当前屏幕
   titleFadeIn: 0,        // 标题淡入动画 0~1
+  lobbyTab: 0,           // 大厅底部Tab: 0=探卷 1=画灵 2=墨宝阁 3=文房四宝
   selectScrollY: 0,      // 选择画面滚动偏移
   selectHover: -1,       // 鼠标悬停的关卡索引 -1=无
   selectedLevel: -1,     // 选中的关卡
   heroHover: -1,         // 画灵选择悬停索引 -1=无
+  selectedHeroes: [],    // 已选画灵索引数组（最多3个）
   resultLevelIdx: -1,    // 结算画面对应的关卡
   resultStars: 0,        // 结算星级
   transitionAlpha: 0,    // 屏幕过渡透明度
   transitionTarget: '',  // 过渡目标屏幕
+  heroDetailIdx: 0,      // 画灵详情查看的画灵索引
+  heroListHover: -1,     // 画灵列表悬停索引
+  gachaPool: 'normal',   // 当前抽卡池: 'normal' | 'limited'
+  gachaPity: { normal: 0, limited: 0 },  // 保底计数器
+  gachaResultItems: [],  // 抽卡结果物品列表
+  shopHover: -1,         // 商店悬停商品索引
+  idleRewardShown: false, // 是否已展示挂机收益弹窗
 };
 
 const state = {
@@ -478,7 +582,18 @@ const state = {
   ceaseFire: false,        // 停火状态
   paused: false,           // 暂停状态
   obstacles: [],           // 障碍物列表（由startLevel从关卡配置加载）
-  heroId: 'qinglan',      // 当前画灵ID
+  // ---- 3人队切换系统 ----
+  party: [],               // [{heroIndex, hp, maxHp, rage, alive}, ...] 最多3个
+  activeSlot: 0,           // 当前操控画灵在party中的索引
+  switchCd: 0,             // 切换冷却（秒）
+  switchInvincible: 0,     // 切换后无敌帧（秒）
+  switchAnim: 0,           // 切换动画播放（秒，>0表示正在播放）
+  switchAnimType: '',      // 'in' | 'out' — 水墨消散/凝聚
+  prevSlot: -1,            // 上一个操控的画灵slot（QTE用）
+  // ---- QTE联携系统 ----
+  qteWindow: 0,            // QTE窗口剩余时间（秒，>0可点击）
+  qteCombo: 0,             // 连续合笔成功次数
+  qteBtnVisible: false,    // 合笔按钮是否可见
   shadows: [],            // 墨影分身列表
   levelExpGained: 0,      // 本局获得经验
 };
@@ -600,7 +715,10 @@ function getPointerPos(e) {
   const rect = canvas.getBoundingClientRect();
   const clientX = e.clientX || (e.touches ? e.touches[0].clientX : 0);
   const clientY = e.clientY || (e.touches ? e.touches[0].clientY : 0);
-  return { x: clientX - rect.left, y: clientY - rect.top };
+  // Canvas CSS尺寸是缩放后的，需要反算回390×844逻辑坐标
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
 }
 
 function getPointerId(e) {
@@ -764,14 +882,31 @@ function startLevel(levelIndex) {
   // 波次配置
   WAVE_CONFIG = cfg.waves;
 
-  // 画灵属性 + 共鸣加成
-  const hero = currentHero;
-  state.heroId = hero.id;
+  // 画灵属性 + 共鸣加成 — 初始化3人队
   const bonus = resonance.getBonus();
-  const baseHp = Math.floor(100 * hero.hpMult + bonus.hp);
+  // 从screenState.selectedHeroes构建party（至少1人，最多3人）
+  const heroIndices = screenState.selectedHeroes.length > 0
+    ? screenState.selectedHeroes
+    : [0]; // 兜底：至少青岚
+  state.party = heroIndices.map(hi => {
+    const h = HEROES[hi];
+    const hp = Math.floor(100 * h.hpMult + bonus.hp);
+    return { heroIndex: hi, hp: hp, maxHp: hp, rage: 0, alive: true };
+  });
+  state.activeSlot = 0;
+  state.switchCd = 0;
+  state.switchInvincible = 0;
+  state.switchAnim = 0;
+  state.switchAnimType = '';
+  state.prevSlot = -1;
+  state.qteWindow = 0;
+  state.qteCombo = 0;
+  state.qteBtnVisible = false;
+  const hero = getActiveHero();
+  const baseHp = state.party[0].maxHp;
   const baseAtk = Math.floor(BULLET_DAMAGE * hero.atkMult + bonus.atk);
   const baseSpd = Math.floor(PLAYER_SPEED * hero.spdMult + bonus.spd);
-  const baseCrit = Math.floor(15 * hero.critMult + bonus.crit); // 基础暴击15%
+  const baseCrit = Math.floor(15 * hero.critMult + bonus.crit);
   state.heroStats = { maxHp: baseHp, atk: baseAtk, spd: baseSpd, crit: baseCrit };
 
   // 玩家
@@ -875,7 +1010,8 @@ function onPointerDown(e) {
     const btnX = W/2, btnY = H * 0.58;
     const btnW = 140, btnH = 44;
     if (Math.abs(pos.x - btnX) < btnW/2 && Math.abs(pos.y - btnY) < btnH/2) {
-      screenState.current = 'select';
+      screenState.current = 'lobby';
+      screenState.lobbyTab = 0;
       playSound('hit');
       return;
     }
@@ -883,9 +1019,18 @@ function onPointerDown(e) {
   }
 
   if (screenState.current === 'select') {
-    // 返回按钮
+    // 返回按钮 → 回大厅
     if (pos.x < 80 && pos.y < 50) {
-      screenState.current = 'title';
+      screenState.current = 'lobby';
+      screenState.lobbyTab = 0;
+      playSound('hit');
+      return;
+    }
+    // 底部Tab检测
+    const tabIdx = hitBottomTab(pos.x, pos.y);
+    if (tabIdx >= 0) {
+      screenState.lobbyTab = tabIdx;
+      screenState.current = LOBBY_TABS[tabIdx].target;
       playSound('hit');
       return;
     }
@@ -898,6 +1043,7 @@ function onPointerDown(e) {
       if (pos.x >= cardX && pos.x <= cardX + cardW && pos.y >= cy && pos.y <= cy + cardH) {
         if (gameSave.levels[i].unlocked) {
           screenState.selectedLevel = i;
+          screenState.selectedHeroes = []; // 每次进入重新选人
           screenState.current = 'heroSelect';
           playSound('crit');
         } else {
@@ -910,23 +1056,50 @@ function onPointerDown(e) {
   }
 
   if (screenState.current === 'heroSelect') {
-    // 返回按钮
+    // 返回按钮 → 回关卡选择
     if (pos.x < 80 && pos.y < 50) {
       screenState.current = 'select';
       playSound('hit');
       return;
     }
-    // 画灵卡片点击
-    const hCardW = W - 60, hCardH = 200;
-    const hCardX = 30, hGapY = 16;
-    const hStartY = 80;
-    for (let i = 0; i < HEROES.length; i++) {
-      const cy = hStartY + i * (hCardH + hGapY);
-      if (pos.x >= hCardX && pos.x <= hCardX + hCardW && pos.y >= cy && pos.y <= cy + hCardH) {
-        currentHero = HEROES[i];
+    // 出发按钮
+    if (screenState.selectedHeroes.length >= 1) {
+      const btnW = 160, btnH = 44;
+      const btnX = W/2 - btnW/2, btnY = H - 110;
+      if (pos.x >= btnX && pos.x <= btnX + btnW && pos.y >= btnY && pos.y <= btnY + btnH) {
+        // 补齐3人：未选位置补0号(青岚)
+        while (screenState.selectedHeroes.length < 3) {
+          if (!screenState.selectedHeroes.includes(0)) screenState.selectedHeroes.push(0);
+          else if (!screenState.selectedHeroes.includes(1)) screenState.selectedHeroes.push(1);
+          else if (!screenState.selectedHeroes.includes(2)) screenState.selectedHeroes.push(2);
+          else break;
+        }
         startLevel(screenState.selectedLevel);
         screenState.current = 'battle';
         playSound('crit');
+        return;
+      }
+    }
+    // 画灵卡片点击 — 多选切换
+    const hCardW = W - 60, hCardH = 195;
+    const hCardX = 30, hGapY = 8;
+    const hStartY = 130;
+    for (let i = 0; i < HEROES.length; i++) {
+      const cy = hStartY + i * (hCardH + hGapY);
+      if (pos.x >= hCardX && pos.x <= hCardX + hCardW && pos.y >= cy && pos.y <= cy + hCardH) {
+        const idx = screenState.selectedHeroes.indexOf(i);
+        if (idx >= 0) {
+          // 取消选择
+          screenState.selectedHeroes.splice(idx, 1);
+          playSound('hit');
+        } else if (screenState.selectedHeroes.length < 3) {
+          // 选择
+          screenState.selectedHeroes.push(i);
+          playSound('crit');
+        } else {
+          // 已满3人，提示
+          playSound('hit');
+        }
         return;
       }
     }
@@ -938,13 +1111,292 @@ function onPointerDown(e) {
     // 再来一次按钮
     if (pos.x >= W/2 - 130 && pos.x <= W/2 - 10 && pos.y >= btnY - 20 && pos.y <= btnY + 20) {
       const lvIdx = screenState.resultLevelIdx;
+      screenState.selectedHeroes = [];
       screenState.current = 'heroSelect';
       playSound('crit');
       return;
     }
-    // 返回选择按钮
+    // 返回选择按钮 → 回大厅
     if (pos.x >= W/2 + 10 && pos.x <= W/2 + 130 && pos.y >= btnY - 20 && pos.y <= btnY + 20) {
-      screenState.current = 'select';
+      screenState.current = 'lobby';
+      screenState.lobbyTab = 0;
+      playSound('hit');
+      return;
+    }
+    return;
+  }
+
+  // ---- 大厅交互 ----
+  if (screenState.current === 'lobby') {
+    const barH = 36;
+    // 设置齿轮
+    if (pos.x >= W - 44 && pos.x <= W && pos.y >= barH + 4 && pos.y <= barH + 24) {
+      screenState.current = 'settings';
+      playSound('hit');
+      return;
+    }
+    // 一键领取挂机收益
+    const idleReward = resources.calcIdleReward();
+    if (idleReward.moJing > 0 || idleReward.lingMo > 0) {
+      const progressY = barH + 10;
+      const avatarR = 50;
+      const avatarCY = progressY + (H - barH - 52 - 10) * 0.1 + avatarR + 10;
+      const idleY = avatarCY + avatarR + 58 + 8 + 32 + 32;
+      const btnW = 80, btnH = 24;
+      const btnX = W / 2 - btnW / 2;
+      const btnY = idleY + 44;
+      if (pos.x >= btnX && pos.x <= btnX + btnW && pos.y >= btnY && pos.y <= btnY + btnH) {
+        const claimed = resources.claimIdleReward();
+        if (claimed) {
+          playSound('crit');
+        }
+        return;
+      }
+    }
+    // 快捷入口3按钮
+    const progressY2 = barH + 10;
+    const avatarR2 = 50;
+    const avatarCY2 = progressY2 + (H - barH - 52 - 10) * 0.1 + avatarR2 + 10;
+    const idleY2 = avatarCY2 + avatarR2 + 58 + 8 + 32;
+    const cardH2 = 70;
+    const shortcutY = idleY2 + cardH2 + 16;
+    const scGap = 10;
+    const scW = (W - 60 - scGap * 2) / 3;
+    for (let i = 0; i < 3; i++) {
+      const sx = 30 + i * (scW + scGap);
+      if (pos.x >= sx && pos.x <= sx + scW && pos.y >= shortcutY && pos.y <= shortcutY + 56) {
+        if (i === 0) { screenState.current = 'heroSelect'; screenState.lobbyTab = 0; }
+        else if (i === 1) { screenState.current = 'heroList'; screenState.lobbyTab = 1; }
+        else if (i === 2) { screenState.current = 'gacha'; screenState.lobbyTab = 2; }
+        playSound('hit');
+        return;
+      }
+    }
+    // 底部Tab
+    const tabIdx = hitBottomTab(pos.x, pos.y);
+    if (tabIdx >= 0) {
+      screenState.lobbyTab = tabIdx;
+      screenState.current = LOBBY_TABS[tabIdx].target;
+      playSound('hit');
+      return;
+    }
+    return;
+  }
+
+  // ---- 画灵列表交互 ----
+  if (screenState.current === 'heroList') {
+    const barH = 36;
+    const cardTopY = barH + 60;
+    const cardH = 130;
+    const cardGap = 12;
+    const cardX = 20;
+    const cardW = W - 40;
+    for (let i = 0; i < HEROES.length; i++) {
+      const cy = cardTopY + i * (cardH + cardGap);
+      if (pos.x >= cardX && pos.x <= cardX + cardW && pos.y >= cy && pos.y <= cy + cardH) {
+        screenState.heroDetailIdx = i;
+        screenState.current = 'heroDetail';
+        playSound('crit');
+        return;
+      }
+    }
+    // 底部Tab
+    const tabIdx = hitBottomTab(pos.x, pos.y);
+    if (tabIdx >= 0) {
+      screenState.lobbyTab = tabIdx;
+      screenState.current = LOBBY_TABS[tabIdx].target;
+      playSound('hit');
+      return;
+    }
+    return;
+  }
+
+  // ---- 画灵详情交互 ----
+  if (screenState.current === 'heroDetail') {
+    const barH = 36;
+    // 返回按钮
+    if (pos.x < 80 && pos.y >= barH + 4 && pos.y <= barH + 26) {
+      screenState.current = 'heroList';
+      playSound('hit');
+      return;
+    }
+    // 升级按钮
+    const upgCost = { moJing: 50 * resonance.level, lingMo: 20 * resonance.level };
+    const avatarR = 38;
+    const avCY = barH + 60;
+    const expY = avCY + avatarR + 54;
+    const attrY = expY + 46;
+    const skillY = attrY + 82;
+    const equipY = skillY + 78;
+    const upgY = equipY + 82;
+    const btnH = 36;
+    const btnX = 40, btnW = W - 80;
+    if (pos.x >= btnX && pos.x <= btnX + btnW && pos.y >= upgY && pos.y <= upgY + btnH) {
+      if (resources.spend(upgCost)) {
+        resonance.addExp(resonance.expToNext(resonance.level));
+        playSound('crit');
+      } else {
+        playSound('hit');
+      }
+      return;
+    }
+    // 底部Tab
+    const tabIdx = hitBottomTab(pos.x, pos.y);
+    if (tabIdx >= 0) {
+      screenState.lobbyTab = tabIdx;
+      screenState.current = LOBBY_TABS[tabIdx].target;
+      playSound('hit');
+      return;
+    }
+    return;
+  }
+
+  // ---- 抽卡交互 ----
+  if (screenState.current === 'gacha') {
+    // 池子选择
+    const poolY = 100;
+    const poolW = (W - 60) / 2;
+    for (let i = 0; i < 2; i++) {
+      const px = 20 + i * (poolW + 20);
+      if (pos.x >= px && pos.x <= px + poolW && pos.y >= poolY && pos.y <= poolY + 40) {
+        screenState.gachaPool = i === 0 ? 'normal' : 'limited';
+        playSound('hit');
+        return;
+      }
+    }
+    // 保底信息位置
+    const scrollY = 160, scrollH = 280;
+    const pityY = scrollY + scrollH + 20;
+    const btnY = pityY + 28;
+    const btnW1 = 140, btnH1 = 42;
+    const btnX1 = W / 2 - btnW1 - 10;
+    const btnX2 = W / 2 + 10;
+
+    // 单抽
+    if (pos.x >= btnX1 && pos.x <= btnX1 + btnW1 && pos.y >= btnY && pos.y <= btnY + btnH1) {
+      if (resources.gachaTicket >= 1) {
+        resources.gachaTicket -= 1;
+        screenState.gachaPity[screenState.gachaPool] = (screenState.gachaPity[screenState.gachaPool] || 0) + 1;
+        screenState.gachaResultItems = [generateGachaItem(screenState.gachaPity[screenState.gachaPool])];
+        screenState.current = 'gachaResult';
+        resources.save();
+        playSound('crit');
+      }
+      return;
+    }
+    // 十连
+    if (pos.x >= btnX2 && pos.x <= btnX2 + btnW1 && pos.y >= btnY && pos.y <= btnY + btnH1) {
+      if (resources.gachaTicket >= 10) {
+        resources.gachaTicket -= 10;
+        const items = [];
+        for (let j = 0; j < 10; j++) {
+          screenState.gachaPity[screenState.gachaPool] = (screenState.gachaPity[screenState.gachaPool] || 0) + 1;
+          items.push(generateGachaItem(screenState.gachaPity[screenState.gachaPool]));
+        }
+        screenState.gachaResultItems = items;
+        screenState.current = 'gachaResult';
+        resources.save();
+        playSound('crit');
+      }
+      return;
+    }
+    // 底部Tab
+    const tabIdx = hitBottomTab(pos.x, pos.y);
+    if (tabIdx >= 0) {
+      screenState.lobbyTab = tabIdx;
+      screenState.current = LOBBY_TABS[tabIdx].target;
+      playSound('hit');
+      return;
+    }
+    return;
+  }
+
+  // ---- 抽卡结果交互 ----
+  if (screenState.current === 'gachaResult') {
+    // 确认按钮
+    if (pos.x >= W / 2 - 50 && pos.x <= W / 2 + 50 && pos.y >= H - 100 && pos.y <= H - 64) {
+      screenState.current = 'gacha';
+      playSound('hit');
+      return;
+    }
+    return;
+  }
+
+  // ---- 商店交互 ----
+  if (screenState.current === 'shop') {
+    const barH = 36;
+    const listY = barH + 60;
+    const cardH = 60;
+    const cardX = 20;
+    const cardW = W - 40;
+    SHOP_ITEMS.forEach((item, i) => {
+      const cy = listY + i * (cardH + 8);
+      if (pos.x >= cardX && pos.x <= cardX + cardW && pos.y >= cy && pos.y <= cy + cardH) {
+        const buyW = 52, buyH = 28;
+        const buyX = cardX + cardW - buyW - 12;
+        const buyY = cy + (cardH - buyH) / 2;
+        // 购买按钮
+        if (pos.x >= buyX && pos.x <= buyX + buyW && pos.y >= buyY && pos.y <= buyY + buyH) {
+          if (item.stock > 0 && resources.spend(item.cost)) {
+            // 发放商品
+            if (item.id === 'gacha1') resources.gachaTicket += 1;
+            else if (item.id === 'gacha10') resources.gachaTicket += 10;
+            else if (item.id === 'lingMo50') resources.lingMo += 50;
+            else if (item.id === 'lingMo200') resources.lingMo += 200;
+            if (item.daily) item.stock--;
+            resources.save();
+            playSound('crit');
+          } else {
+            playSound('hit');
+          }
+        }
+      }
+    });
+    // 底部Tab
+    const tabIdx = hitBottomTab(pos.x, pos.y);
+    if (tabIdx >= 0) {
+      screenState.lobbyTab = tabIdx;
+      screenState.current = LOBBY_TABS[tabIdx].target;
+      playSound('hit');
+      return;
+    }
+    return;
+  }
+
+  // ---- 设置交互 ----
+  if (screenState.current === 'settings') {
+    // 返回按钮
+    if (pos.x < 80 && pos.y >= 24 && pos.y <= 48) {
+      screenState.current = 'lobby';
+      playSound('hit');
+      return;
+    }
+    // 音量滑块
+    const sliderX = 24, sliderW = W - 48, sliderY = 92;
+    if (pos.y >= sliderY - 12 && pos.y <= sliderY + 18 && pos.x >= sliderX && pos.x <= sliderX + sliderW) {
+      gameSettings.volume = Math.max(0, Math.min(1, (pos.x - sliderX) / sliderW));
+      gameSettings.save();
+      return;
+    }
+    // 操作模式
+    const modeY = 130;
+    for (let i = 0; i < 2; i++) {
+      const mx = 24 + i * (W / 2 - 12);
+      const my = modeY + 22;
+      if (pos.x >= mx && pos.x <= mx + W / 2 - 36 && pos.y >= my && pos.y <= my + 32) {
+        gameSettings.manualTarget = (i === 1);
+        gameSettings.save();
+        playSound('hit');
+        return;
+      }
+    }
+    // 重置存档
+    const resetY = 210;
+    if (pos.x >= 24 && pos.x <= W - 24 && pos.y >= resetY && pos.y <= resetY + 36) {
+      gameSave.reset();
+      resonance.level = 1; resonance.exp = 0; resonance.save();
+      resources.moYu = 100; resources.moJing = 500; resources.lingMo = 200; resources.gachaTicket = 10; resources.save();
+      screenState.current = 'title';
       playSound('hit');
       return;
     }
@@ -967,12 +1419,39 @@ function onPointerDown(e) {
     return;
   }
 
+  // QTE合笔按钮检测（最高优先级，限时操作）
+  if (state.qteBtnVisible && state.qteWindow > 0) {
+    const qteX = W / 2, qteY = H * 0.45, qteR = 35;
+    if (dist(pos.x, pos.y, qteX, qteY) < qteR) {
+      qteSuccess();
+      return;
+    }
+  }
+
+  // 画灵头像点击切换
+  if (state.party.length > 1) {
+    const avatarSize = 22;
+    const avatarGap = 10;
+    const avatarBaseX = W - 20 - avatarSize;
+    const avatarBaseY = H / 2 - (state.party.length * (avatarSize * 2 + avatarGap)) / 2;
+    for (let i = 0; i < state.party.length; i++) {
+      const ay = avatarBaseY + i * (avatarSize * 2 + avatarGap);
+      if (dist(pos.x, pos.y, avatarBaseX, ay) < avatarSize + 5) {
+        if (i !== state.activeSlot && state.party[i].alive) {
+          switchHero(i);
+        }
+        return;
+      }
+    }
+  }
+
   // 暂停中 — 检测"返回选卷"按钮
   if (state.paused) {
     // 返回选卷按钮 — 屏幕中下方
     if (Math.abs(pos.x - W/2) < 60 && Math.abs(pos.y - (H/2 + 40)) < 20) {
       state.paused = false;
-      screenState.current = 'select';
+      screenState.current = 'lobby';
+      screenState.lobbyTab = 0;
       playSound('hit');
       return;
     }
@@ -1102,9 +1581,9 @@ function onPointerMove(e) {
 
   // ---- 画灵选择hover ----
   if (screenState.current === 'heroSelect') {
-    const hCardW = W - 60, hCardH = 200;
-    const hCardX = 30, hGapY = 16;
-    const hStartY = 80;
+    const hCardW = W - 60, hCardH = 195;
+    const hCardX = 30, hGapY = 8;
+    const hStartY = 130;
     screenState.heroHover = -1;
     for (let i = 0; i < HEROES.length; i++) {
       const cy = hStartY + i * (hCardH + hGapY);
@@ -1121,6 +1600,42 @@ function onPointerMove(e) {
     const btnY = H * 0.78;
     screenState.resultRetryHover = pos.x >= W/2 - 130 && pos.x <= W/2 - 10 && pos.y >= btnY - 20 && pos.y <= btnY + 20;
     screenState.resultBackHover = pos.x >= W/2 + 10 && pos.x <= W/2 + 130 && pos.y >= btnY - 20 && pos.y <= btnY + 20;
+    return;
+  }
+
+  // ---- 画灵列表hover ----
+  if (screenState.current === 'heroList') {
+    const barH = 36;
+    const cardTopY = barH + 60;
+    const cardH = 130;
+    const cardGap = 12;
+    const cardX = 20;
+    const cardW = W - 40;
+    screenState.heroListHover = -1;
+    for (let i = 0; i < HEROES.length; i++) {
+      const cy = cardTopY + i * (cardH + cardGap);
+      if (pos.x >= cardX && pos.x <= cardX + cardW && pos.y >= cy && pos.y <= cy + cardH) {
+        screenState.heroListHover = i;
+        break;
+      }
+    }
+    return;
+  }
+
+  // ---- 商店hover ----
+  if (screenState.current === 'shop') {
+    const barH = 36;
+    const listY = barH + 60;
+    const cardH = 60;
+    const cardX = 20;
+    const cardW = W - 40;
+    screenState.shopHover = -1;
+    SHOP_ITEMS.forEach((item, i) => {
+      const cy = listY + i * (cardH + 8);
+      if (pos.x >= cardX && pos.x <= cardX + cardW && pos.y >= cy && pos.y <= cy + cardH) {
+        screenState.shopHover = i;
+      }
+    });
     return;
   }
 
@@ -1183,8 +1698,8 @@ canvas.addEventListener('mouseup', onPointerUp);
 function getHeroAtk() { return (state.heroStats && state.heroStats.atk) || BULLET_DAMAGE; }
 function getHeroSpd() { return (state.heroStats && state.heroStats.spd) || PLAYER_SPEED; }
 function getHeroCrit() { return (state.heroStats && state.heroStats.crit) || 15; }
-function getHeroFireRate() { return FIRE_RATE / (currentHero.fireRateMult || 1); }
-function getHeroBulletSize() { return currentHero.id === 'mohen' ? 8 : (5); } // 墨痕大弹
+function getHeroFireRate() { return FIRE_RATE / (getActiveHero().fireRateMult || 1); }
+function getHeroBulletSize() { return getActiveHero().id === 'mohen' ? 8 : (5); } // 墨痕大弹
 
 function fireBullet(fromX, fromY, toX, toY, isRage = false, bulletColor = 0) {
   playSound(isRage ? 'crit' : 'shoot');
@@ -1399,20 +1914,284 @@ function rageWashUpdate(dt) {
   paintCtx.restore();
 }
 
-// ==================== 踩圈切色系统 ====================
-const COLOR_CIRCLE_RADIUS = 30;       // 圈的半径
-const COLOR_CIRCLE_LIFETIME = 8;      // 圈存在时间（秒）
-const COLOR_CIRCLE_SPAWN_INTERVAL = 3; // 每3秒生成一个新圈
-const COLOR_CIRCLE_MAX = 5;           // 地面最多同时5个圈
+// ==================== 3人队切换系统 ====================
+const SWITCH_CD = 3;          // 切换冷却（秒）
+const SWITCH_INVINCIBLE = 0.3;// 切换无敌帧（秒）
+const SWITCH_ANIM_DUR = 0.25; // 切换动画时长（秒）
+const QTE_WINDOW = 0.8;       // QTE合笔窗口（秒）
+const SWITCH_AOE_RADIUS = 60; // 入场冲击AOE半径
+const SWITCH_AOE_MULT = 1.0;  // 入场冲击伤害倍率
+
+// 切换画灵
+function switchHero(slotIndex) {
+  if (slotIndex === state.activeSlot) return false;
+  if (slotIndex < 0 || slotIndex >= state.party.length) return false;
+  if (state.switchCd > 0) return false;
+  const targetSlot = state.party[slotIndex];
+  if (!targetSlot || !targetSlot.alive) return false;
+
+  // 保存当前画灵状态
+  const curSlot = state.party[state.activeSlot];
+  curSlot.hp = state.player.hp;
+  curSlot.rage = state.rage.meter;
+
+  // 记录上一个slot（QTE用）
+  state.prevSlot = state.activeSlot;
+
+  // 切换
+  state.activeSlot = slotIndex;
+  const hero = HEROES[targetSlot.heroIndex];
+  const bonus = resonance.getBonus();
+
+  // 加载目标画灵状态
+  state.player.hp = targetSlot.hp;
+  state.player.maxHp = targetSlot.maxHp;
+  state.rage.meter = targetSlot.rage;
+
+  // 更新heroStats
+  state.heroStats = {
+    maxHp: targetSlot.maxHp,
+    atk: Math.floor(BULLET_DAMAGE * hero.atkMult + bonus.atk),
+    spd: Math.floor(PLAYER_SPEED * hero.spdMult + bonus.spd),
+    crit: Math.floor(15 * hero.critMult + bonus.crit),
+  };
+
+  // 切换效果
+  state.switchCd = SWITCH_CD;
+  state.switchInvincible = SWITCH_INVINCIBLE;
+  state.switchAnim = SWITCH_ANIM_DUR;
+  state.switchAnimType = 'in';
+
+  // 入场冲击AOE
+  const p = state.player;
+  for (const e of state.enemies) {
+    if (!e.alive) continue;
+    const d = dist(p.x, p.y, e.x, e.y);
+    if (d < SWITCH_AOE_RADIUS) {
+      const aoeDmg = Math.floor(getHeroAtk() * SWITCH_AOE_MULT);
+      e.hp -= aoeDmg;
+      e.hurtTimer = 0.1;
+      spawnDamageNumber(e.x, e.y - 10, aoeDmg, false, hero.color);
+    }
+  }
+  // 入场冲击粒子
+  for (let i = 0; i < 10; i++) {
+    const a = Math.random() * Math.PI * 2;
+    state.particles.push({
+      x: p.x, y: p.y,
+      vx: Math.cos(a) * (80 + Math.random() * 80),
+      vy: Math.sin(a) * (80 + Math.random() * 80),
+      size: 3 + Math.random() * 4,
+      color: hero.color,
+      life: 0.3 + Math.random() * 0.2,
+      maxLife: 0.5, alpha: 0.9,
+    });
+  }
+
+  // QTE窗口
+  state.qteWindow = QTE_WINDOW;
+  state.qteBtnVisible = true;
+
+  // 水墨消散+凝聚视觉反馈
+  showActionText(`·${hero.name}·`, p.x, p.y - 50);
+  playSound('crit');
+  state.shake.intensity = 1.0;
+
+  return true;
+}
+
+// QTE合笔成功
+function qteSuccess() {
+  if (!state.qteBtnVisible) return;
+  state.qteCombo++;
+  const p = state.player;
+  const atk = getHeroAtk();
+
+  if (state.qteCombo >= 2) {
+    // ---- 3人合笔：五色晕染全屏 ----
+    const dmg = Math.floor(atk * 2.5);
+    // 全屏AOE
+    for (const e of state.enemies) {
+      if (!e.alive) continue;
+      e.hp -= dmg;
+      e.hurtTimer = 0.15;
+      spawnDamageNumber(e.x, e.y - 10, dmg, true, C.RED);
+    }
+    // 全屏涂色
+    for (let i = 0; i < 5; i++) {
+      paintInk(p.x + (Math.random() - 0.5) * 200, p.y + (Math.random() - 0.5) * 200, COLORS[i], 25);
+    }
+    state.paintCover = Math.min(1, state.paintCover + 0.08);
+    showActionText('·三灵合笔·五色晕染·', p.x, p.y - 80);
+    // 全屏粒子
+    for (let i = 0; i < 30; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 150 + Math.random() * 250;
+      state.particles.push({
+        x: p.x, y: p.y,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        size: 4 + Math.random() * 8,
+        color: COLORS[i % 5],
+        life: 0.4 + Math.random() * 0.5, maxLife: 0.9, alpha: 1,
+      });
+    }
+    state.shake.intensity = 4;
+    state.hitStop = 20;
+    rageWashStart();
+    state.qteCombo = 0; // 重置
+  } else {
+    // ---- 2人合笔：两色墨流交汇 ----
+    const dmg = Math.floor(atk * 1.5);
+    const hero1 = getActiveHero();
+    const prevSlot = state.party[state.prevSlot];
+    const hero2 = prevSlot ? HEROES[prevSlot.heroIndex] : hero1;
+    // 中等AOE
+    for (const e of state.enemies) {
+      if (!e.alive) continue;
+      const d = dist(p.x, p.y, e.x, e.y);
+      if (d < 120) {
+        e.hp -= dmg;
+        e.hurtTimer = 0.12;
+        spawnDamageNumber(e.x, e.y - 10, dmg, true, hero1.color);
+      }
+    }
+    // 两色墨流粒子
+    for (let i = 0; i < 16; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 100 + Math.random() * 150;
+      state.particles.push({
+        x: p.x, y: p.y,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        size: 3 + Math.random() * 5,
+        color: i % 2 === 0 ? hero1.color : hero2.color,
+        life: 0.3 + Math.random() * 0.3, maxLife: 0.6, alpha: 0.9,
+      });
+    }
+    paintInk(p.x, p.y, hero1.color, 15);
+    paintInk(p.x, p.y, hero2.color, 15);
+    state.paintCover = Math.min(1, state.paintCover + 0.03);
+    showActionText('·合笔·', p.x, p.y - 70);
+    state.shake.intensity = 2;
+    state.hitStop = 10;
+  }
+
+  state.qteBtnVisible = false;
+  state.qteWindow = 0;
+  playSound('rage');
+}
+
+// 画灵死亡处理
+function handleHeroDeath() {
+  const slot = state.party[state.activeSlot];
+  if (!slot) return;
+  slot.alive = false;
+  slot.hp = 0;
+  state.player.hp = 0;
+
+  // 自动切换到下一个存活的画灵
+  let switched = false;
+  for (let i = 0; i < state.party.length; i++) {
+    if (i !== state.activeSlot && state.party[i].alive) {
+      // 先恢复state.player.hp让switchHero正常工作
+      state.switchCd = 0; // 死亡切换无视CD
+      switchHero(i);
+      switched = true;
+      break;
+    }
+  }
+
+  if (!switched) {
+    // 3人全灭
+    state.gameOver = true;
+    state.player.hp = 0;
+  }
+}
+
+// 退场画灵被动效果
+let offFieldTimer = 0;
+function applyOffFieldPassives(dt) {
+  if (state.party.length <= 1) return; // 只有1人无退场效果
+  offFieldTimer += dt;
+  if (offFieldTimer < 5.0) return; // 每5秒触发一次
+  offFieldTimer = 0;
+
+  const p = state.player;
+  for (let i = 0; i < state.party.length; i++) {
+    if (i === state.activeSlot) continue; // 在场的不算
+    const slot = state.party[i];
+    if (!slot.alive) continue;
+    const hero = HEROES[slot.heroIndex];
+
+    if (hero.passive === 'inkHeal') {
+      // 青岚墨愈：退场全队每5秒+3HP
+      for (const s of state.party) {
+        if (s.alive) {
+          s.hp = Math.min(s.maxHp, s.hp + 3);
+        }
+      }
+      // 给当前操控画灵回血
+      if (state.party[state.activeSlot].alive) {
+        state.player.hp = Math.min(state.player.maxHp, state.party[state.activeSlot].hp + 3);
+        spawnDamageNumber(p.x, p.y - 20, '+3', false, '#2d8a4e');
+      }
+    }
+    // 丹霞丹心和墨痕墨守是常驻属性加成，在getHeroStats中处理
+  }
+}
+
+// 获取含退场被动的属性
+function getHeroStatsWithPassives() {
+  const hero = getActiveHero();
+  const bonus = resonance.getBonus();
+  let atkMult = hero.atkMult;
+  let critMult = hero.critMult;
+  let defMult = 1.0; // 伤害减免
+
+  for (let i = 0; i < state.party.length; i++) {
+    if (i === state.activeSlot) continue;
+    const slot = state.party[i];
+    if (!slot.alive) continue;
+    const h = HEROES[slot.heroIndex];
+    if (h.passive === 'critSplash') {
+      critMult += 0.05; // 丹霞丹心：全队暴击+5%
+    }
+    if (h.passive === 'bigBullet') {
+      defMult -= 0.1; // 墨痕墨守：全队防御+10%（受伤-10%）
+    }
+  }
+
+  return {
+    maxHp: state.party[state.activeSlot].maxHp,
+    atk: Math.floor(BULLET_DAMAGE * atkMult + bonus.atk),
+    spd: Math.floor(PLAYER_SPEED * hero.spdMult + bonus.spd),
+    crit: Math.floor(15 * critMult + bonus.crit),
+    defMult: Math.max(0.5, defMult), // 最低50%受伤
+  };
+}
+
+// ==================== 踩圈切色系统（墨池） ====================
+const COLOR_CIRCLE_RADIUS = 35;       // 墨池半径
+const COLOR_CIRCLE_LIFETIME = 8;      // 墨池存在时间（秒）
+const COLOR_CIRCLE_FORM_TIME = 0.5;   // 出现动画时长（秒）
+const COLOR_CIRCLE_DRY_TIME = 1.0;    // 干涸动画时长（秒）
+const COLOR_CIRCLE_SPAWN_INTERVAL = 6; // 每6秒生成新墨池
+const COLOR_CIRCLE_MAX = 3;           // 地面最多同时3个墨池
 
 function spawnColorCircle() {
   const p = state.player;
-  // 在玩家周围随机位置生成（但不要太近也不要太远）
+  // 在玩家周围300-500px随机位置生成
   const angle = Math.random() * Math.PI * 2;
-  const radius = 120 + Math.random() * 200;
+  const radius = 300 + Math.random() * 200;
   const cx = clamp(p.x + Math.cos(angle) * radius, 60, WORLD_W - 60);
   const cy = clamp(p.y + Math.sin(angle) * radius, 60, WORLD_H - 60);
-  const colorIdx = Math.floor(Math.random() * COLORS.length);
+
+  // 排除当前弹丸颜色——保证有换的必要
+  let colorIdx;
+  const availableIdxs = [];
+  for (let ci = 0; ci < COLORS.length; ci++) {
+    if (ci !== state.bulletColorIndex) availableIdxs.push(ci);
+  }
+  colorIdx = availableIdxs[Math.floor(Math.random() * availableIdxs.length)];
 
   state.colorCircles.push({
     x: cx,
@@ -1422,6 +2201,9 @@ function spawnColorCircle() {
     life: COLOR_CIRCLE_LIFETIME,
     maxLife: COLOR_CIRCLE_LIFETIME,
     pulsePhase: Math.random() * Math.PI * 2,
+    phase: 'forming',       // forming → active → drying → dead
+    formTimer: 0,           // forming动画计时
+    dryTimer: 0,            // drying动画计时
   });
 
   // 超过上限则移除最老的
@@ -1433,23 +2215,50 @@ function spawnColorCircle() {
 function updateColorCircles(dt) {
   const p = state.player;
 
+  // 仅第2波起生成墨池
+  const canSpawn = state.wave.current >= 1; // wave从0开始，1=第2波
   // 生成计时
-  state.colorCircleTimer += dt;
-  if (state.colorCircleTimer >= (LEVEL_CONFIG[state.level].colorCircleRate || COLOR_CIRCLE_SPAWN_INTERVAL) && state.colorCircles.length < COLOR_CIRCLE_MAX) {
-    state.colorCircleTimer = 0;
-    spawnColorCircle();
+  if (canSpawn) {
+    state.colorCircleTimer += dt;
+    if (state.colorCircleTimer >= (LEVEL_CONFIG[state.level].colorCircleRate || COLOR_CIRCLE_SPAWN_INTERVAL) && state.colorCircles.length < COLOR_CIRCLE_MAX) {
+      state.colorCircleTimer = 0;
+      spawnColorCircle();
+    }
   }
 
   // 更新 + 踩踏检测
   for (let i = state.colorCircles.length - 1; i >= 0; i--) {
     const cc = state.colorCircles[i];
-    cc.life -= dt;
 
-    // 过期移除
-    if (cc.life <= 0) {
+    // 状态机更新
+    if (cc.phase === 'forming') {
+      cc.formTimer += dt;
+      if (cc.formTimer >= COLOR_CIRCLE_FORM_TIME) {
+        cc.phase = 'active';
+      }
+    } else if (cc.phase === 'active') {
+      cc.life -= dt;
+      // 进入干涸阶段
+      if (cc.life <= COLOR_CIRCLE_DRY_TIME) {
+        cc.phase = 'drying';
+        cc.dryTimer = 0;
+      }
+    } else if (cc.phase === 'drying') {
+      cc.life -= dt;
+      cc.dryTimer += dt;
+      if (cc.life <= 0) {
+        cc.phase = 'dead';
+      }
+    }
+
+    // 死亡移除
+    if (cc.phase === 'dead') {
       state.colorCircles.splice(i, 1);
       continue;
     }
+
+    // 仅active/drying状态可踩踏
+    if (cc.phase === 'forming') continue;
 
     // 玩家踩上检测
     const d = dist(p.x, p.y, cc.x, cc.y);
@@ -1457,8 +2266,8 @@ function updateColorCircles(dt) {
       // 切换当前攻击颜色
       state.bulletColorIndex = cc.colorIdx;
 
-      // 踩踏反馈特效
-      for (let j = 0; j < 8; j++) {
+      // 踩踏反馈特效——墨池溅起水花
+      for (let j = 0; j < 10; j++) {
         const a = Math.random() * Math.PI * 2;
         const sp = 80 + Math.random() * 120;
         state.particles.push({
@@ -1489,32 +2298,58 @@ function drawColorCircles() {
     const lifeRatio = cc.life / cc.maxLife;
     const pulse = 0.7 + Math.sin(now * 0.004 + cc.pulsePhase) * 0.3;
 
-    // 即将消失时闪烁
     let alpha = 0.35 * pulse;
-    if (lifeRatio < 0.25) {
-      alpha *= (0.3 + 0.7 * Math.abs(Math.sin(now * 0.01)));
+    let r = COLOR_CIRCLE_RADIUS;
+
+    // 状态机视觉
+    if (cc.phase === 'forming') {
+      // 出现动画：从0渐显+扩大
+      const formPct = cc.formTimer / COLOR_CIRCLE_FORM_TIME;
+      alpha *= formPct;
+      r *= 0.5 + formPct * 0.5;
+    } else if (cc.phase === 'active') {
+      // 正常显示，即将干涸时闪烁
+      if (lifeRatio < 0.25) {
+        alpha *= (0.3 + 0.7 * Math.abs(Math.sin(now * 0.01)));
+      }
+    } else if (cc.phase === 'drying') {
+      // 干涸渐隐+缩小+波纹
+      const dryPct = cc.dryTimer / COLOR_CIRCLE_DRY_TIME;
+      alpha *= (1 - dryPct);
+      r *= (1 - dryPct * 0.3);
     }
 
     // 外圈光晕
     ctx.globalAlpha = alpha * 0.4;
     ctx.fillStyle = cc.color;
     ctx.beginPath();
-    ctx.arc(cc.x, cc.y, COLOR_CIRCLE_RADIUS + 8, 0, Math.PI * 2);
+    ctx.arc(cc.x, cc.y, r + 8, 0, Math.PI * 2);
     ctx.fill();
+
+    // 波纹（active/drying状态）
+    if (cc.phase !== 'forming') {
+      const wavePhase = (now * 0.002 + cc.pulsePhase) % 1;
+      ctx.globalAlpha = alpha * 0.2 * (1 - wavePhase);
+      ctx.strokeStyle = cc.color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(cc.x, cc.y, r + wavePhase * 20, 0, Math.PI * 2);
+      ctx.stroke();
+    }
 
     // 主圈
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = cc.color;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(cc.x, cc.y, COLOR_CIRCLE_RADIUS, 0, Math.PI * 2);
+    ctx.arc(cc.x, cc.y, r, 0, Math.PI * 2);
     ctx.stroke();
 
     // 内填充
     ctx.globalAlpha = alpha * 0.15;
     ctx.fillStyle = cc.color;
     ctx.beginPath();
-    ctx.arc(cc.x, cc.y, COLOR_CIRCLE_RADIUS, 0, Math.PI * 2);
+    ctx.arc(cc.x, cc.y, r, 0, Math.PI * 2);
     ctx.fill();
 
     // 中心色点
@@ -1523,6 +2358,15 @@ function drawColorCircles() {
     ctx.beginPath();
     ctx.arc(cc.x, cc.y, 6, 0, Math.PI * 2);
     ctx.fill();
+
+    // 颜色名标签
+    if (cc.phase === 'active' && lifeRatio > 0.3) {
+      ctx.globalAlpha = alpha * 2;
+      ctx.font = '10px "STKaiti","KaiTi","Microsoft YaHei",serif';
+      ctx.fillStyle = cc.color;
+      ctx.textAlign = 'center';
+      ctx.fillText(COLOR_NAMES[cc.colorIdx], cc.x, cc.y - r - 6);
+    }
   }
   ctx.globalAlpha = 1;
 }
@@ -1560,22 +2404,24 @@ function drawBackground() {
 
   // 纸张纹理 — 在世界坐标中分布，摄像机偏移后仅绘制可见区域
   for (const dot of paperTextureDots) {
-    const sx = dot.x - cam.x;
-    const sy = dot.y - cam.y;
+    const sx = Math.round(dot.x - cam.x);
+    const sy = Math.round(dot.y - cam.y);
     if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
     ctx.fillStyle = `rgba(200,200,200,${dot.a})`;
     ctx.fillRect(sx, sy, dot.w, dot.h);
   }
 
-  // 纸张横线 — 古风信笺感
+  // 纸张横线 — 古风信笺感（亚像素对齐防闪烁）
   const lineSpacing = 60;
   const lineOffY = -(cam.y % lineSpacing);
   ctx.strokeStyle = bg.lineColor;
   ctx.lineWidth = 1;
   for (let ly = lineOffY; ly < H; ly += lineSpacing) {
+    // 0.5对齐：1px线条在整数+0.5坐标渲染最锐利，杜绝亚像素闪烁
+    const snapY = Math.floor(ly) + 0.5;
     ctx.beginPath();
-    ctx.moveTo(0, ly);
-    ctx.lineTo(W, ly);
+    ctx.moveTo(0, snapY);
+    ctx.lineTo(W, snapY);
     ctx.stroke();
   }
 
@@ -1652,9 +2498,11 @@ function drawLevelDecoration(cfg, cam) {
         const bx = (i < bg.decoCount / 2)
           ? 20 + i * 15 + bxShift % 60
           : W - 20 - (i - bg.decoCount / 2) * 15 + bxShift % 60;
+        // 用索引代替random，杜绝每帧闪烁
+        const lean = (i % 2 === 0) ? 3 : -3;
         ctx.beginPath();
         ctx.moveTo(bx, 0 + byShift % 40);
-        ctx.lineTo(bx + (Math.random() > 0.5 ? 3 : -3), H + byShift % 40);
+        ctx.lineTo(bx + lean, H + byShift % 40);
         ctx.stroke();
       }
       break;
@@ -1930,6 +2778,23 @@ function drawPlayer() {
   if (state.dash.invincible > 0) {
     ctx.globalAlpha = 0.3 + Math.sin(Date.now() * 0.03) * 0.2;
   }
+  // 切换无敌 — 水墨消散效果
+  if (state.switchInvincible > 0) {
+    ctx.globalAlpha = 0.4 + Math.sin(Date.now() * 0.025) * 0.3;
+    // 消散粒子
+    if (Math.random() < 0.3) {
+      state.particles.push({
+        x: p.x + (Math.random() - 0.5) * 30,
+        y: p.y + (Math.random() - 0.5) * 30,
+        vx: (Math.random() - 0.5) * 60,
+        vy: (Math.random() - 0.5) * 60 - 20,
+        size: 2 + Math.random() * 4,
+        color: getActiveHero().color,
+        life: 0.2 + Math.random() * 0.2,
+        maxLife: 0.4, alpha: 0.6,
+      });
+    }
+  }
 
   // 使用图片资源
   if (assets.player && assets.player.complete && assets.player.naturalWidth > 0) {
@@ -2035,7 +2900,7 @@ function drawPlayer() {
   ctx.fill();
 
   // 身体
-  const bodyColor = isRage ? C.RED : (currentHero.bodyColor || C.INK_BLACK);
+  const bodyColor = isRage ? C.RED : (getActiveHero().bodyColor || C.INK_BLACK);
   ctx.fillStyle = hurtFlash ? '#ffffff' : bodyColor;
   ctx.globalAlpha = hurtFlash ? 0.9 : 0.9;
   ctx.beginPath();
@@ -2044,14 +2909,14 @@ function drawPlayer() {
 
   // 外圈
   ctx.globalAlpha = isRage ? 0.3 : 0.15;
-  ctx.fillStyle = isRage ? C.RED : (currentHero.color || C.INK_BLACK);
+  ctx.fillStyle = isRage ? C.RED : (getActiveHero().color || C.INK_BLACK);
   ctx.beginPath();
   ctx.arc(p.x, p.y, PLAYER_SIZE + 4, 0, Math.PI * 2);
   ctx.fill();
   ctx.globalAlpha = 1;
 
   // 腰带
-  ctx.strokeStyle = currentHero.color || C.RED;
+  ctx.strokeStyle = getActiveHero().color || C.RED;
   ctx.globalAlpha = 0.4;
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -2601,9 +3466,9 @@ function drawUI() {
   // 底部提示 — 画灵名+共鸣等级
   ctx.textAlign = 'center';
   ctx.font = '11px "STKaiti","KaiTi","Microsoft YaHei",serif';
-  ctx.fillStyle = currentHero.color || C.INK_LIGHT;
+  ctx.fillStyle = getActiveHero().color || C.INK_LIGHT;
   ctx.globalAlpha = 0.5;
-  ctx.fillText(`${currentHero.name} · 共鸣Lv.${resonance.level}`, W/2, H - 18);
+  ctx.fillText(`${getActiveHero().name} · 共鸣Lv.${resonance.level}`, W/2, H - 18);
   ctx.globalAlpha = 1;
 
   // 小地图 — 右上角
@@ -2655,6 +3520,131 @@ function drawUI() {
   ctx.beginPath();
   ctx.arc(mmX + state.player.x * mmScaleX, mmY + state.player.y * mmScaleY, 2.5, 0, Math.PI * 2);
   ctx.fill();
+
+  // ---- 右侧画灵头像 ----
+  if (state.party.length > 0) {
+    const avatarSize = 22;
+    const avatarGap = 10;
+    const avatarBaseX = W - 20 - avatarSize;
+    const avatarBaseY = H / 2 - (state.party.length * (avatarSize * 2 + avatarGap)) / 2;
+
+    for (let i = 0; i < state.party.length; i++) {
+      const slot = state.party[i];
+      const hero = HEROES[slot.heroIndex];
+      const ax = avatarBaseX;
+      const ay = avatarBaseY + i * (avatarSize * 2 + avatarGap);
+      const isActive = i === state.activeSlot;
+
+      // 背景
+      ctx.fillStyle = isActive ? 'rgba(245,240,232,0.9)' : 'rgba(245,240,232,0.5)';
+      ctx.beginPath();
+      ctx.arc(ax, ay, avatarSize, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (!slot.alive) {
+        // 已阵亡 — 暗红裂痕
+        ctx.fillStyle = 'rgba(80,30,30,0.7)';
+        ctx.beginPath();
+        ctx.arc(ax, ay, avatarSize, 0, Math.PI * 2);
+        ctx.fill();
+        // 裂痕
+        ctx.strokeStyle = '#c43a31';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(ax - 6, ay - 6); ctx.lineTo(ax + 6, ay + 6);
+        ctx.moveTo(ax + 6, ay - 6); ctx.lineTo(ax - 6, ay + 6);
+        ctx.stroke();
+      } else {
+        // 头像颜色
+        ctx.fillStyle = hero.color;
+        ctx.globalAlpha = isActive ? 0.9 : 0.5;
+        ctx.beginPath();
+        ctx.arc(ax, ay, avatarSize - 3, 0, Math.PI * 2);
+        ctx.fill();
+        // 名字首字
+        ctx.font = 'bold 11px "STKaiti","KaiTi","Microsoft YaHei",serif';
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.globalAlpha = isActive ? 1 : 0.6;
+        ctx.fillText(hero.name.charAt(0), ax, ay + 4);
+      }
+
+      // 当前操控 — 亮色边框+呼吸动画
+      if (isActive && slot.alive) {
+        const breathe = 0.6 + Math.sin(Date.now() * 0.006) * 0.3;
+        ctx.strokeStyle = hero.color;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = breathe;
+        ctx.beginPath();
+        ctx.arc(ax, ay, avatarSize + 1, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.globalAlpha = 1;
+
+      // 小HP条
+      if (slot.alive) {
+        const hpBarW = avatarSize * 2;
+        const hpBarH = 3;
+        const hpBarX = ax - avatarSize;
+        const hpBarY = ay + avatarSize + 3;
+        ctx.fillStyle = 'rgba(0,0,0,0.1)';
+        ctx.fillRect(hpBarX, hpBarY, hpBarW, hpBarH);
+        const hpPct = Math.max(slot.hp / slot.maxHp, 0);
+        ctx.fillStyle = hpPct > 0.5 ? '#2d8a4e' : (hpPct > 0.25 ? '#c4a835' : '#c43a31');
+        ctx.globalAlpha = 0.7;
+        ctx.fillRect(hpBarX, hpBarY, hpBarW * hpPct, hpBarH);
+        ctx.globalAlpha = 1;
+      }
+
+      // 切换CD遮罩
+      if (isActive && state.switchCd > 0) {
+        const cdPct = state.switchCd / SWITCH_CD;
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.arc(ax, ay, avatarSize, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cdPct);
+        ctx.closePath();
+        ctx.fill();
+        // CD倒计时
+        ctx.font = '9px "STKaiti","KaiTi","Microsoft YaHei",serif';
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.fillText(Math.ceil(state.switchCd), ax, ay + 3);
+      }
+    }
+  }
+
+  // ---- QTE合笔按钮 ----
+  if (state.qteBtnVisible && state.qteWindow > 0) {
+    const qteX = W / 2;
+    const qteY = H * 0.45;
+    const qteR = 30;
+    // 水墨圆章
+    const pulse = 0.7 + Math.sin(Date.now() * 0.015) * 0.3;
+    ctx.fillStyle = `rgba(196,58,49,${pulse * 0.3})`;
+    ctx.beginPath();
+    ctx.arc(qteX, qteY, qteR + 8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgba(196,58,49,${pulse})`;
+    ctx.beginPath();
+    ctx.arc(qteX, qteY, qteR, 0, Math.PI * 2);
+    ctx.fill();
+    // 文字
+    ctx.font = 'bold 16px "STKaiti","KaiTi","Microsoft YaHei",serif';
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center';
+    ctx.fillText('合笔', qteX, qteY + 5);
+    // 倒计时弧线
+    const qtePct = state.qteWindow / QTE_WINDOW;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3;
+    ctx.globalAlpha = 0.8;
+    ctx.beginPath();
+    ctx.arc(qteX, qteY, qteR + 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * qtePct);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 
   ctx.globalAlpha = 1;
 }
@@ -2777,7 +3767,7 @@ function draw() {
   // 墨影分身
   for (const shadow of state.shadows) {
     ctx.globalAlpha = 0.4 + Math.sin(Date.now() * 0.008) * 0.1;
-    ctx.fillStyle = currentHero.color;
+    ctx.fillStyle = getActiveHero().color;
     ctx.beginPath();
     ctx.arc(shadow.x, shadow.y, PLAYER_SIZE * 0.8, 0, Math.PI * 2);
     ctx.fill();
@@ -2955,6 +3945,986 @@ function draw() {
 
   // UI（不受摄像机影响）
   drawUI();
+}
+
+// ==================== 大厅/主界面 ====================
+// 底部Tab定义
+const LOBBY_TABS = [
+  { id: 0, label: '探卷', icon: 'scroll', target: 'select' },
+  { id: 1, label: '画灵', icon: 'hero', target: 'heroList' },
+  { id: 2, label: '墨宝阁', icon: 'gacha', target: 'gacha' },
+  { id: 3, label: '文房四宝', icon: 'shop', target: 'shop' },
+];
+
+// 绘制顶部资源条（大厅和子界面共用）
+function drawResourceBar() {
+  const barH = 36;
+  // 背景
+  ctx.fillStyle = 'rgba(40,35,30,0.85)';
+  ctx.fillRect(0, 0, W, barH);
+  // 底线
+  ctx.strokeStyle = 'rgba(180,160,130,0.3)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(0, barH);
+  ctx.lineTo(W, barH);
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const y = barH / 2;
+  const items = [
+    { label: '墨玉', value: resources.moYu, color: '#88b4e8' },
+    { label: '墨晶', value: resources.moJing, color: '#c4a882' },
+    { label: '灵墨', value: resources.lingMo, color: '#8bc48b' },
+    { label: '墨韵券', value: resources.gachaTicket, color: '#d4a0d4' },
+  ];
+  const gap = W / items.length;
+  items.forEach((it, i) => {
+    const x = gap * i + gap / 2;
+    ctx.font = '500 10px sans-serif';
+    ctx.fillStyle = it.color;
+    ctx.fillText(it.label, x - 14, y);
+    ctx.font = '500 12px sans-serif';
+    ctx.fillStyle = '#f0e8d8';
+    ctx.fillText(it.value, x + 16, y);
+  });
+
+  // 共鸣等级（右上角）
+  ctx.font = '500 10px sans-serif';
+  ctx.fillStyle = '#e8d080';
+  ctx.textAlign = 'right';
+  ctx.fillText(`共鸣Lv.${resonance.level}`, W - 8, y);
+  ctx.textAlign = 'center';
+
+  return barH;
+}
+
+// 绘制底部Tab导航（大厅和子界面共用）
+function drawBottomTabs() {
+  const tabH = 52;
+  const tabY = H - tabH;
+  // 背景
+  ctx.fillStyle = 'rgba(40,35,30,0.9)';
+  ctx.fillRect(0, tabY, W, tabH);
+  // 顶线
+  ctx.strokeStyle = 'rgba(180,160,130,0.3)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(0, tabY);
+  ctx.lineTo(W, tabY);
+  ctx.stroke();
+
+  const tabW = W / LOBBY_TABS.length;
+  LOBBY_TABS.forEach((tab, i) => {
+    const x = tabW * i;
+    const cx = x + tabW / 2;
+    const cy = tabY + tabH / 2;
+    const active = screenState.lobbyTab === i;
+
+    // 高亮背景
+    if (active) {
+      ctx.fillStyle = 'rgba(180,160,130,0.15)';
+      ctx.fillRect(x, tabY, tabW, tabH);
+      // 顶线高亮
+      ctx.strokeStyle = '#c4a060';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 8, tabY);
+      ctx.lineTo(x + tabW - 8, tabY);
+      ctx.stroke();
+    }
+
+    // 图标（简化为文字符号）
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${active ? '500' : '400'} 18px sans-serif`;
+    const icons = ['📜', '👤', '🎲', '🏪'];
+    ctx.fillStyle = active ? '#e8d080' : '#887860';
+    ctx.fillText(icons[i], cx, cy - 6);
+
+    // 标签文字
+    ctx.font = `${active ? '500' : '400'} 10px sans-serif`;
+    ctx.fillStyle = active ? '#f0e8d8' : '#887860';
+    ctx.fillText(tab.label, cx, cy + 14);
+  });
+
+  return tabH;
+}
+
+// 检测底部Tab点击
+function hitBottomTab(px, py) {
+  const tabH = 52;
+  const tabY = H - tabH;
+  if (py < tabY || py > H) return -1;
+  const tabW = W / LOBBY_TABS.length;
+  const idx = Math.floor(px / tabW);
+  if (idx >= 0 && idx < LOBBY_TABS.length) return idx;
+  return -1;
+}
+
+function drawLobby() {
+  const ss = screenState;
+
+  // 背景 — 水墨古卷风
+  const grd = ctx.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, '#f5f0e8');
+  grd.addColorStop(0.5, '#ede5d5');
+  grd.addColorStop(1, '#e0d8c8');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, W, H);
+
+  // 纸张纹理点缀
+  ctx.fillStyle = 'rgba(160,150,130,0.04)';
+  for (let i = 0; i < 60; i++) {
+    const dx = ((i * 73 + 17) % W);
+    const dy = ((i * 97 + 41) % H);
+    const r = 1 + (i % 3);
+    ctx.beginPath();
+    ctx.arc(dx, dy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 顶部资源条
+  const barH = drawResourceBar();
+
+  // 中央展示区 — 当前画灵立绘 + 画卷修复进度
+  const centerY = barH + 10;
+  const centerH = H - barH - 52 - 10; // 减去顶部和底部Tab
+
+  // 画灵展示区域
+  const hero = HEROES[0]; // 默认展示青岚
+  const displayY = centerY + centerH * 0.1;
+
+  // 画灵圆形头像（大）
+  const avatarR = 50;
+  const avatarCX = W / 2;
+  const avatarCY = displayY + avatarR + 10;
+  // 色环
+  ctx.strokeStyle = hero.color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(avatarCX, avatarCY, avatarR + 4, 0, Math.PI * 2);
+  ctx.stroke();
+  // 头像背景
+  ctx.fillStyle = hero.color + '30';
+  ctx.beginPath();
+  ctx.arc(avatarCX, avatarCY, avatarR, 0, Math.PI * 2);
+  ctx.fill();
+  // 头像文字
+  ctx.font = '500 28px sans-serif';
+  ctx.fillStyle = hero.color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(hero.name.charAt(0), avatarCX, avatarCY);
+
+  // 画灵名字+称号
+  ctx.font = '500 16px sans-serif';
+  ctx.fillStyle = '#3a3020';
+  ctx.fillText(hero.name, avatarCX, avatarCY + avatarR + 20);
+  ctx.font = '400 11px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.fillText(hero.title, avatarCX, avatarCY + avatarR + 38);
+
+  // 画卷修复进度条
+  const progressY = avatarCY + avatarR + 58;
+  const progressW = W - 80;
+  const progressH = 8;
+  const progressX = 40;
+  // 修复进度 = 基于总星数
+  const maxStars = 9;
+  const progress = gameSave.totalStars / maxStars;
+  // 背景条
+  ctx.fillStyle = 'rgba(100,90,70,0.15)';
+  roundRect(ctx, progressX, progressY, progressW, progressH, 4);
+  ctx.fill();
+  // 进度条
+  if (progress > 0) {
+    const fillW = Math.max(8, progressW * Math.min(1, progress));
+    const pgrd = ctx.createLinearGradient(progressX, 0, progressX + fillW, 0);
+    pgrd.addColorStop(0, '#7ab87a');
+    pgrd.addColorStop(1, '#4a8a4a');
+    ctx.fillStyle = pgrd;
+    roundRect(ctx, progressX, progressY, fillW, progressH, 4);
+    ctx.fill();
+  }
+  ctx.font = '400 10px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.textAlign = 'center';
+  ctx.fillText(`画卷修复 ${Math.floor(progress * 100)}%`, W / 2, progressY + progressH + 14);
+
+  // 挂机收益区域
+  const idleY = progressY + progressH + 32;
+  const idleReward = resources.calcIdleReward();
+  const hasIdleReward = idleReward.moJing > 0 || idleReward.lingMo > 0;
+
+  // 收益卡片背景
+  const cardX = 30, cardW = W - 60, cardH = 70;
+  ctx.fillStyle = 'rgba(60,50,40,0.06)';
+  roundRect(ctx, cardX, idleY, cardW, cardH, 10);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(160,140,110,0.2)';
+  ctx.lineWidth = 0.5;
+  roundRect(ctx, cardX, idleY, cardW, cardH, 10);
+  ctx.stroke();
+
+  if (hasIdleReward) {
+    // 有可领取收益
+    ctx.font = '500 12px sans-serif';
+    ctx.fillStyle = '#5a4a30';
+    ctx.textAlign = 'center';
+    ctx.fillText('离线收益', W / 2, idleY + 18);
+    ctx.font = '400 11px sans-serif';
+    ctx.fillStyle = '#c4a882';
+    ctx.fillText(`墨晶 +${idleReward.moJing}  灵墨 +${idleReward.lingMo}`, W / 2, idleY + 36);
+
+    // 领取按钮
+    const btnW = 80, btnH = 24;
+    const btnX = W / 2 - btnW / 2;
+    const btnY = idleY + 44;
+    const pulse = 0.8 + Math.sin(Date.now() * 0.004) * 0.2;
+    ctx.fillStyle = `rgba(120,160,80,${pulse})`;
+    roundRect(ctx, btnX, btnY, btnW, btnH, 6);
+    ctx.fill();
+    ctx.font = '500 11px sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText('一键领取', W / 2, btnY + btnH / 2);
+  } else {
+    // 无收益
+    ctx.font = '400 11px sans-serif';
+    ctx.fillStyle = '#a09080';
+    ctx.textAlign = 'center';
+    ctx.fillText('离线收益', W / 2, idleY + 22);
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = '#c0b8a8';
+    ctx.fillText('收益将在离线后累积', W / 2, idleY + 42);
+  }
+
+  // 快捷入口 — 3个小按钮（最近使用的功能）
+  const shortcutY = idleY + cardH + 16;
+  const shortcuts = [
+    { label: '编队', sub: '选择画灵', icon: '⚔️' },
+    { label: '养成', sub: '升级画灵', icon: '📖' },
+    { label: '抽卡', sub: '墨宝阁', icon: '🎲' },
+  ];
+  const scGap = 10;
+  const scW = (W - 60 - scGap * 2) / 3;
+  shortcuts.forEach((sc, i) => {
+    const sx = 30 + i * (scW + scGap);
+    ctx.fillStyle = 'rgba(60,50,40,0.05)';
+    roundRect(ctx, sx, shortcutY, scW, 56, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(160,140,110,0.15)';
+    ctx.lineWidth = 0.5;
+    roundRect(ctx, sx, shortcutY, scW, 56, 8);
+    ctx.stroke();
+    ctx.font = '16px sans-serif';
+    ctx.fillStyle = '#6a5a40';
+    ctx.textAlign = 'center';
+    ctx.fillText(sc.icon, sx + scW / 2, shortcutY + 20);
+    ctx.font = '500 11px sans-serif';
+    ctx.fillStyle = '#5a4a30';
+    ctx.fillText(sc.label, sx + scW / 2, shortcutY + 38);
+    ctx.font = '400 9px sans-serif';
+    ctx.fillStyle = '#a09080';
+    ctx.fillText(sc.sub, sx + scW / 2, shortcutY + 50);
+  });
+
+  // 右上角设置齿轮
+  const gearX = W - 30, gearY = barH + 14;
+  ctx.font = '16px sans-serif';
+  ctx.fillStyle = '#a09080';
+  ctx.textAlign = 'center';
+  ctx.fillText('⚙', gearX, gearY);
+
+  // 底部Tab导航
+  drawBottomTabs();
+}
+
+// ==================== 画灵列表 ====================
+function drawHeroList() {
+  const ss = screenState;
+
+  // 背景
+  ctx.fillStyle = '#f5f0e8';
+  ctx.fillRect(0, 0, W, H);
+
+  // 顶部资源条
+  const barH = drawResourceBar();
+
+  // 标题
+  ctx.font = '500 16px sans-serif';
+  ctx.fillStyle = '#3a3020';
+  ctx.textAlign = 'center';
+  ctx.fillText('画灵录', W / 2, barH + 24);
+
+  // 共鸣等级提示
+  ctx.font = '400 11px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.fillText(`共鸣等级 Lv.${resonance.level} — 全画灵共享成长`, W / 2, barH + 44);
+
+  // 画灵卡片
+  const cardTopY = barH + 60;
+  const cardH = 130;
+  const cardGap = 12;
+  const cardX = 20;
+  const cardW = W - 40;
+
+  HEROES.forEach((hero, i) => {
+    const cy = cardTopY + i * (cardH + cardGap);
+    const hover = ss.heroListHover === i;
+
+    // 卡片背景
+    ctx.fillStyle = hover ? 'rgba(60,50,40,0.08)' : 'rgba(60,50,40,0.04)';
+    roundRect(ctx, cardX, cy, cardW, cardH, 12);
+    ctx.fill();
+    ctx.strokeStyle = hover ? hero.color : 'rgba(160,140,110,0.2)';
+    ctx.lineWidth = hover ? 1.5 : 0.5;
+    roundRect(ctx, cardX, cy, cardW, cardH, 12);
+    ctx.stroke();
+
+    // 色环头像
+    const avR = 28;
+    const avCX = cardX + 44;
+    const avCY = cy + cardH / 2;
+    ctx.strokeStyle = hero.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(avCX, avCY, avR + 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = hero.color + '20';
+    ctx.beginPath();
+    ctx.arc(avCX, avCY, avR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = '500 18px sans-serif';
+    ctx.fillStyle = hero.color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(hero.name.charAt(0), avCX, avCY);
+
+    // 文字信息
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const tx = avCX + avR + 16;
+    // 名字+称号
+    ctx.font = '500 14px sans-serif';
+    ctx.fillStyle = '#3a3020';
+    ctx.fillText(`${hero.name} · ${hero.title}`, tx, cy + 14);
+    // 描述
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = '#8a7a60';
+    ctx.fillText(hero.desc, tx, cy + 34);
+    // 属性概要
+    const stats = getHeroStatsWithPassives(i);
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = '#6a5a40';
+    ctx.fillText(`HP:${stats.hp}  ATK:${stats.atk}  SPD:${stats.spd}  CRIT:${stats.crit}%`, tx, cy + 52);
+    // 技能
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = hero.passiveColor;
+    ctx.fillText(`被动: ${hero.passiveDesc}`, tx, cy + 70);
+    ctx.fillStyle = '#8a7a60';
+    ctx.fillText(`爆发: ${hero.rageSkillDesc}`, tx, cy + 86);
+
+    // 右箭头
+    ctx.font = '400 14px sans-serif';
+    ctx.fillStyle = hover ? '#5a4a30' : '#c0b8a8';
+    ctx.textAlign = 'right';
+    ctx.fillText('›', cardX + cardW - 14, cy + cardH / 2 - 6);
+    ctx.textAlign = 'left';
+  });
+
+  // 底部Tab
+  drawBottomTabs();
+}
+
+// ==================== 画灵详情/养成 ====================
+function drawHeroDetail() {
+  const ss = screenState;
+  const hero = HEROES[ss.heroDetailIdx] || HEROES[0];
+  const stats = getHeroStatsWithPassives(ss.heroDetailIdx);
+
+  // 背景
+  ctx.fillStyle = '#f5f0e8';
+  ctx.fillRect(0, 0, W, H);
+
+  // 顶部资源条
+  const barH = drawResourceBar();
+
+  // 返回按钮
+  ctx.font = '500 13px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('← 返回', 12, barH + 10);
+
+  // 画灵头像+色环
+  const avR = 38;
+  const avCX = W / 2;
+  const avCY = barH + 60;
+  ctx.strokeStyle = hero.color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(avCX, avCY, avR + 3, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = hero.color + '25';
+  ctx.beginPath();
+  ctx.arc(avCX, avCY, avR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.font = '500 24px sans-serif';
+  ctx.fillStyle = hero.color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(hero.name.charAt(0), avCX, avCY);
+
+  // 名字+称号
+  ctx.font = '500 16px sans-serif';
+  ctx.fillStyle = '#3a3020';
+  ctx.textBaseline = 'top';
+  ctx.fillText(hero.name, W / 2, avCY + avR + 14);
+  ctx.font = '400 11px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.fillText(hero.title, W / 2, avCY + avR + 34);
+
+  // 共鸣等级+经验条
+  const expY = avCY + avR + 54;
+  ctx.font = '500 11px sans-serif';
+  ctx.fillStyle = '#5a4a30';
+  ctx.fillText(`共鸣 Lv.${resonance.level}`, W / 2, expY);
+  // 经验条
+  const expBarX = 50, expBarW = W - 100, expBarH = 6;
+  const expRatio = resonance.exp / resonance.expToNext(resonance.level);
+  ctx.fillStyle = 'rgba(100,90,70,0.12)';
+  roundRect(ctx, expBarX, expY + 16, expBarW, expBarH, 3);
+  ctx.fill();
+  if (expRatio > 0) {
+    ctx.fillStyle = '#c4a060';
+    roundRect(ctx, expBarX, expY + 16, Math.max(6, expBarW * expRatio), expBarH, 3);
+    ctx.fill();
+  }
+  ctx.font = '400 9px sans-serif';
+  ctx.fillStyle = '#a09080';
+  ctx.fillText(`${resonance.exp}/${resonance.expToNext(resonance.level)}`, W / 2, expY + 30);
+
+  // 属性面板
+  const attrY = expY + 46;
+  ctx.fillStyle = 'rgba(60,50,40,0.04)';
+  roundRect(ctx, 20, attrY, W - 40, 72, 8);
+  ctx.fill();
+  ctx.font = '500 11px sans-serif';
+  ctx.fillStyle = '#5a4a30';
+  ctx.textAlign = 'left';
+  ctx.fillText('属性面板', 32, attrY + 14);
+
+  const attrItems = [
+    { label: '生命', value: stats.hp, color: '#c45a5a' },
+    { label: '攻击', value: stats.atk, color: '#c4a040' },
+    { label: '速度', value: stats.spd, color: '#4a8ac4' },
+    { label: '暴击', value: stats.crit + '%', color: '#c48040' },
+    { label: '防御', value: stats.def || 0, color: '#6aaa6a' },
+  ];
+  attrItems.forEach((a, i) => {
+    const ax = 32 + (i % 3) * 112;
+    const ay = attrY + 32 + Math.floor(i / 3) * 20;
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = '#8a7a60';
+    ctx.fillText(a.label, ax, ay);
+    ctx.font = '500 11px sans-serif';
+    ctx.fillStyle = a.color;
+    ctx.fillText('' + a.value, ax + 32, ay);
+  });
+
+  // 技能区域
+  const skillY = attrY + 82;
+  ctx.fillStyle = 'rgba(60,50,40,0.04)';
+  roundRect(ctx, 20, skillY, W - 40, 68, 8);
+  ctx.fill();
+  ctx.font = '500 11px sans-serif';
+  ctx.fillStyle = '#5a4a30';
+  ctx.textAlign = 'left';
+  ctx.fillText('技能', 32, skillY + 14);
+  // 被动
+  ctx.font = '400 10px sans-serif';
+  ctx.fillStyle = hero.passiveColor;
+  ctx.fillText('被动: ' + hero.passiveDesc, 32, skillY + 32);
+  // 爆发
+  ctx.fillStyle = '#8a7a60';
+  ctx.fillText('爆发: ' + hero.rageSkillDesc, 32, skillY + 50);
+
+  // 装备槽位
+  const equipY = skillY + 78;
+  ctx.fillStyle = 'rgba(60,50,40,0.04)';
+  roundRect(ctx, 20, equipY, W - 40, 72, 8);
+  ctx.fill();
+  ctx.font = '500 11px sans-serif';
+  ctx.fillStyle = '#5a4a30';
+  ctx.textAlign = 'left';
+  ctx.fillText('装备', 32, equipY + 14);
+  // 3个装备槽
+  const slots = ['墨笔', '宣纸', '印章'];
+  const slotColors = ['#c4a040', '#6aaa6a', '#c48040'];
+  slots.forEach((s, i) => {
+    const sx = 32 + i * 112;
+    const sy = equipY + 30;
+    ctx.strokeStyle = slotColors[i] + '60';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    roundRect(ctx, sx, sy, 96, 32, 6);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = '#b0a890';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${s}（空）`, sx + 48, sy + 18);
+  });
+  ctx.textAlign = 'left';
+
+  // 升级按钮
+  const upgY = equipY + 82;
+  const upgCost = { moJing: 50 * resonance.level, lingMo: 20 * resonance.level };
+  const canUpg = resources.canAfford(upgCost);
+  const btnW = W - 80, btnH = 36;
+  const btnX = 40;
+  ctx.fillStyle = canUpg ? 'rgba(120,160,80,0.8)' : 'rgba(140,130,110,0.4)';
+  roundRect(ctx, btnX, upgY, btnW, btnH, 8);
+  ctx.fill();
+  ctx.font = '500 13px sans-serif';
+  ctx.fillStyle = canUpg ? '#fff' : '#a0a0a0';
+  ctx.textAlign = 'center';
+  ctx.fillText(`共鸣升级 (墨晶×${upgCost.moJing} 灵墨×${upgCost.lingMo})`, W / 2, upgY + btnH / 2);
+
+  // 底部Tab
+  drawBottomTabs();
+}
+
+// ==================== 抽卡界面 ====================
+function drawGacha() {
+  const ss = screenState;
+
+  // 背景
+  const grd = ctx.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, '#2a2040');
+  grd.addColorStop(1, '#1a1428');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, W, H);
+
+  // 星光点缀
+  ctx.fillStyle = 'rgba(200,180,255,0.15)';
+  for (let i = 0; i < 40; i++) {
+    const sx = ((i * 83 + 23) % W);
+    const sy = ((i * 67 + 11) % (H - 100)) + 40;
+    const sr = 0.5 + (i % 3) * 0.5;
+    ctx.beginPath();
+    ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 顶部资源条（深色版）
+  drawResourceBar();
+
+  // 标题
+  ctx.font = '500 18px sans-serif';
+  ctx.fillStyle = '#e0d0f0';
+  ctx.textAlign = 'center';
+  ctx.fillText('墨宝阁', W / 2, 56);
+  ctx.font = '400 11px sans-serif';
+  ctx.fillStyle = '#a090c0';
+  ctx.fillText('以墨为媒，唤灵入卷', W / 2, 76);
+
+  // 两个池子选择
+  const poolY = 100;
+  const poolW = (W - 60) / 2;
+  const poolH = 40;
+  ['normal', 'limited'].forEach((pool, i) => {
+    const px = 20 + i * (poolW + 20);
+    const active = ss.gachaPool === pool;
+    ctx.fillStyle = active ? 'rgba(180,140,255,0.2)' : 'rgba(100,80,140,0.1)';
+    roundRect(ctx, px, poolY, poolW, poolH, 8);
+    ctx.fill();
+    ctx.strokeStyle = active ? '#b48cff' : 'rgba(140,120,180,0.3)';
+    ctx.lineWidth = active ? 1.5 : 0.5;
+    roundRect(ctx, px, poolY, poolW, poolH, 8);
+    ctx.stroke();
+    ctx.font = `${active ? '500' : '400'} 12px sans-serif`;
+    ctx.fillStyle = active ? '#e0d0f0' : '#9080a0';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(pool === 'normal' ? '常驻墨韵' : '限定墨韵', px + poolW / 2, poolY + poolH / 2);
+  });
+  ctx.textBaseline = 'top';
+
+  // 中央画卷展示
+  const scrollY = 160;
+  const scrollH = 280;
+  const scrollW = 200;
+  const scrollX = (W - scrollW) / 2;
+  // 画卷边框
+  ctx.strokeStyle = 'rgba(180,140,255,0.3)';
+  ctx.lineWidth = 1;
+  roundRect(ctx, scrollX, scrollY, scrollW, scrollH, 12);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(60,40,80,0.3)';
+  roundRect(ctx, scrollX, scrollY, scrollW, scrollH, 12);
+  ctx.fill();
+  // 中央文字
+  ctx.font = '400 14px sans-serif';
+  ctx.fillStyle = '#a090c0';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('墨韵涌动', W / 2, scrollY + scrollH / 2 - 10);
+  ctx.font = '400 11px sans-serif';
+  ctx.fillStyle = '#8070a0';
+  ctx.fillText('点击下方按钮召唤画灵', W / 2, scrollY + scrollH / 2 + 12);
+
+  // 保底信息
+  const pityY = scrollY + scrollH + 20;
+  const pity = ss.gachaPity[ss.gachaPool] || 0;
+  ctx.font = '400 11px sans-serif';
+  ctx.fillStyle = '#b48cff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`已抽 ${pity} 次 | 保底 ${40 - pity % 40} 次内`, W / 2, pityY);
+
+  // 抽卡按钮
+  const btnY = pityY + 28;
+  const btnW1 = 140, btnH1 = 42;
+  const btnX1 = W / 2 - btnW1 - 10;
+  const btnX2 = W / 2 + 10;
+
+  // 单抽
+  const canSingle = resources.gachaTicket >= 1;
+  ctx.fillStyle = canSingle ? 'rgba(180,140,255,0.6)' : 'rgba(100,80,140,0.3)';
+  roundRect(ctx, btnX1, btnY, btnW1, btnH1, 8);
+  ctx.fill();
+  ctx.font = '500 13px sans-serif';
+  ctx.fillStyle = canSingle ? '#fff' : '#808080';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('单抽', btnX1 + btnW1 / 2, btnY + 14);
+  ctx.font = '400 10px sans-serif';
+  ctx.fillStyle = canSingle ? '#e0d0f0' : '#606060';
+  ctx.fillText('墨韵券×1', btnX1 + btnW1 / 2, btnY + 30);
+
+  // 十连
+  const canTen = resources.gachaTicket >= 10;
+  ctx.fillStyle = canTen ? 'rgba(255,180,80,0.6)' : 'rgba(140,100,40,0.3)';
+  roundRect(ctx, btnX2, btnY, btnW1, btnH1, 8);
+  ctx.fill();
+  ctx.font = '500 13px sans-serif';
+  ctx.fillStyle = canTen ? '#fff' : '#808080';
+  ctx.fillText('十连', btnX2 + btnW1 / 2, btnY + 14);
+  ctx.font = '400 10px sans-serif';
+  ctx.fillStyle = canTen ? '#ffe0a0' : '#606060';
+  ctx.fillText('墨韵券×10', btnX2 + btnW1 / 2, btnY + 30);
+  ctx.textBaseline = 'top';
+
+  // 底部Tab
+  drawBottomTabs();
+}
+
+// 抽卡结果
+function drawGachaResult() {
+  const ss = screenState;
+  const items = ss.gachaResultItems || [];
+
+  // 深色背景
+  ctx.fillStyle = 'rgba(20,15,30,0.95)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.font = '500 16px sans-serif';
+  ctx.fillStyle = '#e0d0f0';
+  ctx.textAlign = 'center';
+  ctx.fillText('墨韵显现', W / 2, 60);
+
+  // 结果物品
+  items.forEach((item, i) => {
+    const cols = items.length <= 3 ? items.length : Math.min(5, items.length);
+    const row = Math.floor(i / 5);
+    const col = i % 5;
+    const totalInRow = row === Math.floor((items.length - 1) / 5) ? ((items.length - 1) % 5) + 1 : Math.min(5, items.length);
+    const cellW = 60;
+    const startX = W / 2 - (Math.min(totalInRow, 5) * (cellW + 8)) / 2;
+    const cx = startX + col * (cellW + 8) + cellW / 2;
+    const cy = 120 + row * 90;
+
+    // 品质颜色
+    const qColors = { white: '#d0d0d0', green: '#6aaa6a', blue: '#4a8ac4', purple: '#9a5ac4', gold: '#c4a040' };
+    const qColor = qColors[item.quality] || '#d0d0d0';
+
+    // 卡片
+    ctx.fillStyle = qColor + '20';
+    roundRect(ctx, cx - 26, cy - 26, 52, 52, 8);
+    ctx.fill();
+    ctx.strokeStyle = qColor + '80';
+    ctx.lineWidth = 1;
+    roundRect(ctx, cx - 26, cy - 26, 52, 52, 8);
+    ctx.stroke();
+
+    // 物品图标
+    ctx.font = '400 18px sans-serif';
+    ctx.fillStyle = qColor;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(item.icon || '?', cx, cy - 2);
+
+    // 名字
+    ctx.font = '400 9px sans-serif';
+    ctx.fillStyle = qColor;
+    ctx.textBaseline = 'top';
+    ctx.fillText(item.name, cx, cy + 30);
+  });
+
+  // 确认按钮
+  ctx.fillStyle = 'rgba(180,140,255,0.5)';
+  roundRect(ctx, W / 2 - 50, H - 100, 100, 36, 8);
+  ctx.fill();
+  ctx.font = '500 13px sans-serif';
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('确认', W / 2, H - 82);
+}
+
+// ==================== 商店界面 ====================
+const SHOP_ITEMS = [
+  { id: 'gacha1', name: '墨韵券×1', desc: '抽卡凭证', cost: { moYu: 10 }, icon: '🎲', stock: 10, daily: true },
+  { id: 'gacha10', name: '墨韵券×10', desc: '十连凭证', cost: { moYu: 90 }, icon: '🎲', stock: 5, daily: true },
+  { id: 'lingMo50', name: '灵墨×50', desc: '养成材料', cost: { moYu: 20 }, icon: '🟢', stock: 10, daily: true },
+  { id: 'lingMo200', name: '灵墨×200', desc: '养成材料', cost: { moJing: 500 }, icon: '🟢', stock: 0, daily: false },
+];
+
+function drawShop() {
+  const ss = screenState;
+
+  // 背景
+  ctx.fillStyle = '#f5f0e8';
+  ctx.fillRect(0, 0, W, H);
+
+  // 顶部资源条
+  const barH = drawResourceBar();
+
+  // 标题
+  ctx.font = '500 16px sans-serif';
+  ctx.fillStyle = '#3a3020';
+  ctx.textAlign = 'center';
+  ctx.fillText('文房四宝', W / 2, barH + 24);
+  ctx.font = '400 11px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.fillText('以墨换宝，物尽其用', W / 2, barH + 44);
+
+  // 商品列表
+  const listY = barH + 60;
+  const cardW = W - 40;
+  const cardH = 60;
+  const cardX = 20;
+
+  SHOP_ITEMS.forEach((item, i) => {
+    const cy = listY + i * (cardH + 8);
+    const hover = ss.shopHover === i;
+    const canBuy = resources.canAfford(item.cost) && item.stock > 0;
+
+    // 卡片背景
+    ctx.fillStyle = hover ? 'rgba(60,50,40,0.07)' : 'rgba(60,50,40,0.03)';
+    roundRect(ctx, cardX, cy, cardW, cardH, 8);
+    ctx.fill();
+    ctx.strokeStyle = canBuy ? 'rgba(160,140,110,0.2)' : 'rgba(160,140,110,0.08)';
+    ctx.lineWidth = 0.5;
+    roundRect(ctx, cardX, cy, cardW, cardH, 8);
+    ctx.stroke();
+
+    // 图标
+    ctx.font = '20px sans-serif';
+    ctx.fillStyle = '#6a5a40';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(item.icon, cardX + 16, cy + cardH / 2);
+
+    // 名称+描述
+    ctx.font = '500 12px sans-serif';
+    ctx.fillStyle = canBuy ? '#3a3020' : '#a0a0a0';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(item.name, cardX + 48, cy + 12);
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = '#8a7a60';
+    ctx.fillText(item.desc, cardX + 48, cy + 30);
+
+    // 价格+库存
+    const costStr = Object.entries(item.cost).map(([k, v]) => {
+      const labels = { moYu: '墨玉', moJing: '墨晶', lingMo: '灵墨' };
+      return `${labels[k] || k}×${v}`;
+    }).join(' ');
+    ctx.font = '400 10px sans-serif';
+    ctx.fillStyle = canBuy ? '#c4a040' : '#a0a0a0';
+    ctx.fillText(costStr, cardX + 48, cy + 44);
+
+    // 购买按钮
+    const buyW = 52, buyH = 28;
+    const buyX = cardX + cardW - buyW - 12;
+    const buyY = cy + (cardH - buyH) / 2;
+    ctx.fillStyle = canBuy ? 'rgba(120,160,80,0.7)' : 'rgba(140,130,110,0.3)';
+    roundRect(ctx, buyX, buyY, buyW, buyH, 6);
+    ctx.fill();
+    ctx.font = '500 11px sans-serif';
+    ctx.fillStyle = canBuy ? '#fff' : '#a0a0a0';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(item.stock > 0 ? '购买' : '售罄', buyX + buyW / 2, buyY + buyH / 2);
+  });
+
+  // 底部Tab
+  drawBottomTabs();
+}
+
+// ==================== 设置界面 ====================
+function drawSettings() {
+  // 背景
+  ctx.fillStyle = '#f5f0e8';
+  ctx.fillRect(0, 0, W, H);
+
+  // 标题
+  ctx.font = '500 16px sans-serif';
+  ctx.fillStyle = '#3a3020';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('设置', W / 2, 30);
+
+  // 返回按钮
+  ctx.font = '500 13px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.textAlign = 'left';
+  ctx.fillText('← 返回', 12, 30);
+
+  const optY = 70;
+
+  // 音量控制
+  ctx.font = '500 12px sans-serif';
+  ctx.fillStyle = '#3a3020';
+  ctx.textAlign = 'left';
+  ctx.fillText('音量', 24, optY);
+  // 滑块背景
+  const sliderX = 24, sliderW = W - 48, sliderH = 6;
+  const sliderY = optY + 22;
+  ctx.fillStyle = 'rgba(100,90,70,0.15)';
+  roundRect(ctx, sliderX, sliderY, sliderW, sliderH, 3);
+  ctx.fill();
+  // 滑块位置
+  const vol = gameSettings.volume;
+  const thumbX = sliderX + sliderW * vol;
+  ctx.fillStyle = '#c4a060';
+  roundRect(ctx, sliderX, sliderY, Math.max(6, sliderW * vol), sliderH, 3);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(thumbX, sliderY + sliderH / 2, 8, 0, Math.PI * 2);
+  ctx.fillStyle = '#e8d080';
+  ctx.fill();
+  ctx.font = '400 10px sans-serif';
+  ctx.fillStyle = '#8a7a60';
+  ctx.textAlign = 'right';
+  ctx.fillText(`${Math.round(vol * 100)}%`, W - 24, optY);
+
+  // 操作模式
+  const modeY = optY + 60;
+  ctx.font = '500 12px sans-serif';
+  ctx.fillStyle = '#3a3020';
+  ctx.textAlign = 'left';
+  ctx.fillText('操作模式', 24, modeY);
+  const modes = ['自动瞄准', '手动锁敌'];
+  modes.forEach((m, i) => {
+    const mx = 24 + i * (W / 2 - 12);
+    const my = modeY + 22;
+    const active = (i === 0 && !gameSettings.manualTarget) || (i === 1 && gameSettings.manualTarget);
+    ctx.fillStyle = active ? 'rgba(120,160,80,0.2)' : 'rgba(60,50,40,0.05)';
+    roundRect(ctx, mx, my, W / 2 - 36, 32, 6);
+    ctx.fill();
+    ctx.strokeStyle = active ? '#6aaa6a' : 'rgba(160,140,110,0.2)';
+    ctx.lineWidth = active ? 1 : 0.5;
+    roundRect(ctx, mx, my, W / 2 - 36, 32, 6);
+    ctx.stroke();
+    ctx.font = `${active ? '500' : '400'} 11px sans-serif`;
+    ctx.fillStyle = active ? '#3a6b3a' : '#8a7a60';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(m, mx + (W / 2 - 36) / 2, my + 16);
+  });
+
+  // 重置存档
+  const resetY = modeY + 80;
+  ctx.fillStyle = 'rgba(200,80,60,0.1)';
+  roundRect(ctx, 24, resetY, W - 48, 36, 8);
+  ctx.fill();
+  ctx.font = '500 12px sans-serif';
+  ctx.fillStyle = '#c45a3a';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('重置存档', W / 2, resetY + 18);
+}
+
+// 设置数据
+const SETTINGS_KEY = 'inkMaster_settings';
+const gameSettings = {
+  volume: 0.7,
+  manualTarget: false,
+  load() {
+    try {
+      const d = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+      if (d) { this.volume = d.volume ?? 0.7; this.manualTarget = d.manualTarget ?? false; }
+    } catch(e) {}
+  },
+  save() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ volume: this.volume, manualTarget: this.manualTarget })); } catch(e) {}
+  },
+};
+gameSettings.load();
+
+// 辅助：圆角矩形路径
+function roundRect(c, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y);
+  c.arcTo(x + w, y, x + w, y + r, r);
+  c.lineTo(x + w, y + h - r);
+  c.arcTo(x + w, y + h, x + w - r, y + h, r);
+  c.lineTo(x + r, y + h);
+  c.arcTo(x, y + h, x, y + h - r, r);
+  c.lineTo(x, y + r);
+  c.arcTo(x, y, x + r, y, r);
+  c.closePath();
+}
+
+// 抽卡物品生成
+function generateGachaItem(pityCount) {
+  const pool = screenState.gachaPool;
+  // 保底：40抽必出紫色
+  const isPity = pityCount % 40 === 0;
+  let quality, name, icon, type;
+
+  if (isPity) {
+    quality = 'purple';
+    const rand = Math.random();
+    if (rand < 0.4) { name = '青岚碎片'; icon = '🌿'; type = 'heroShard'; }
+    else if (rand < 0.7) { name = '丹霞碎片'; icon = '🔥'; type = 'heroShard'; }
+    else { name = '墨痕碎片'; icon = '🌑'; type = 'heroShard'; }
+  } else {
+    const rand = Math.random();
+    if (rand < 0.45) { quality = 'white'; name = '灵墨×20'; icon = '🟢'; type = 'resource'; }
+    else if (rand < 0.75) { quality = 'green'; name = '墨晶×100'; icon = '🟡'; type = 'resource'; }
+    else if (rand < 0.92) { quality = 'blue'; name = '墨笔残卷'; icon = '🖌️'; type = 'equipShard'; }
+    else { quality = 'purple'; name = '画灵之魂'; icon = '✨'; type = 'heroShard'; }
+  }
+
+  // 直接发放奖励
+  if (type === 'resource') {
+    if (name.includes('灵墨')) resources.lingMo += 20;
+    else if (name.includes('墨晶')) resources.moJing += 100;
+  } else if (type === 'equipShard') {
+    resources.lingMo += 30;
+  } else if (type === 'heroShard') {
+    resources.lingMo += 50;
+    resources.moJing += 50;
+  }
+
+  return { quality, name, icon, type };
 }
 
 // ==================== 标题画面 ====================
@@ -3191,7 +5161,10 @@ function drawLevelSelect() {
   // 总星数
   ctx.font = '12px "STKaiti","KaiTi","Microsoft YaHei",serif';
   ctx.fillStyle = '#aaa';
-  ctx.fillText(`★ ${gameSave.totalStars} / 9`, W/2, H - 30);
+  ctx.fillText(`★ ${gameSave.totalStars} / 9`, W/2, H - 80);
+
+  // 底部Tab导航
+  drawBottomTabs();
 }
 
 // ==================== 结算画面 ====================
@@ -3320,21 +5293,59 @@ function drawHeroSelect() {
   ctx.textAlign = 'left';
   ctx.fillText('← 返回', 15, 35);
 
-  // 共鸣等级 — 顶部显示
+  // 队伍预览 — 顶部已选画灵缩略图
+  const selHeros = ss.selectedHeroes;
+  const previewY = 62;
   ctx.textAlign = 'center';
   ctx.font = '12px "STKaiti","KaiTi","Microsoft YaHei",serif';
   ctx.fillStyle = '#998866';
-  ctx.fillText(`共鸣 Lv.${resonance.level}  (${resonance.exp}/${resonance.expToNext(resonance.level)})`, W/2, 62);
+  ctx.fillText(`编队 (${selHeros.length}/3)`, W/2, previewY);
+  // 3个位置圆圈
+  for (let si = 0; si < 3; si++) {
+    const px = W/2 - 50 + si * 50;
+    const py = previewY + 22;
+    if (si < selHeros.length) {
+      const sh = HEROES[selHeros[si]];
+      ctx.fillStyle = sh.color;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(px, py, 14, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.font = 'bold 11px "STKaiti","KaiTi","Microsoft YaHei",serif';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(sh.name.charAt(0), px, py + 4);
+    } else {
+      ctx.strokeStyle = 'rgba(150,140,120,0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.arc(px, py, 14, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = '9px "STKaiti","KaiTi","Microsoft YaHei",serif';
+      ctx.fillStyle = '#ccc';
+      ctx.fillText(si + 1, px, py + 3);
+    }
+  }
 
-  // 3个画灵卡片
-  const hCardW = W - 60, hCardH = 200;
-  const hCardX = 30, hGapY = 16;
-  const hStartY = 80;
+  // 共鸣等级
+  ctx.textAlign = 'center';
+  ctx.font = '12px "STKaiti","KaiTi","Microsoft YaHei",serif';
+  ctx.fillStyle = '#998866';
+  ctx.fillText(`共鸣 Lv.${resonance.level}  (${resonance.exp}/${resonance.expToNext(resonance.level)})`, W/2, previewY + 52);
+
+  // 3个画灵卡片 — 高度容纳属性条+被动+爆发
+  const hCardW = W - 60, hCardH = 195;
+  const hCardX = 30, hGapY = 8;
+  const hStartY = 130;
 
   for (let i = 0; i < HEROES.length; i++) {
     const hero = HEROES[i];
     const cy = hStartY + i * (hCardH + hGapY);
     const isHover = ss.heroHover === i;
+    const isSelected = selHeros.includes(i);
+    const selOrder = selHeros.indexOf(i) + 1; // 1/2/3
 
     ctx.save();
     ctx.globalAlpha = isHover ? 1 : 0.92;
@@ -3359,10 +5370,29 @@ function drawHeroSelect() {
     ctx.roundRect(hCardX, cy, hCardW, hCardH, 8);
     ctx.fill();
 
-    // 边框 — 画灵主题色
-    ctx.strokeStyle = isHover ? hero.color : 'rgba(150,140,120,0.2)';
-    ctx.lineWidth = isHover ? 2 : 1;
-    ctx.stroke();
+    // 边框 — 已选=主题色+序号，悬停=浅色，默认=淡灰
+    if (isSelected) {
+      ctx.strokeStyle = hero.color;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      // 序号角标
+      ctx.fillStyle = hero.color;
+      ctx.beginPath();
+      ctx.arc(hCardX + hCardW - 16, cy + 16, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = 'bold 12px "STKaiti","KaiTi","Microsoft YaHei",serif';
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.fillText(selOrder, hCardX + hCardW - 16, cy + 20);
+    } else if (isHover) {
+      ctx.strokeStyle = hero.color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = 'rgba(150,140,120,0.2)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
 
     // 画灵头像 — 圆形色块
     const avatarR = 28;
@@ -3458,11 +5488,33 @@ function drawHeroSelect() {
     ctx.restore();
   }
 
-  // 底部提示
+  // 底部 — 出发按钮 / 提示
   ctx.textAlign = 'center';
-  ctx.font = '12px "STKaiti","KaiTi","Microsoft YaHei",serif';
-  ctx.fillStyle = '#bbb';
-  ctx.fillText('选择画灵进入战场', W/2, H - 20);
+  if (selHeros.length >= 1) {
+    // 出发按钮
+    const btnW = 160, btnH = 44;
+    const btnX = W/2 - btnW/2, btnY = H - 110;
+    ctx.fillStyle = 'rgba(196,58,49,0.12)';
+    ctx.beginPath();
+    ctx.roundRect(btnX, btnY, btnW, btnH, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(196,58,49,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.font = '20px "STKaiti","KaiTi","Microsoft YaHei",serif';
+    ctx.fillStyle = '#c43a31';
+    ctx.fillText(selHeros.length < 3 ? '·点将出征·' : '·三灵出征·', W/2, btnY + 28);
+    ctx.font = '10px "STKaiti","KaiTi","Microsoft YaHei",serif';
+    ctx.fillStyle = '#aa8866';
+    ctx.fillText('可少选，未选位置自动补青岚', W/2, btnY + btnH + 14);
+  } else {
+    ctx.font = '12px "STKaiti","KaiTi","Microsoft YaHei",serif';
+    ctx.fillStyle = '#bbb';
+    ctx.fillText('点选画灵加入编队', W/2, H - 80);
+  }
+
+  // 底部Tab导航
+  drawBottomTabs();
 }
 
 // ==================== 关卡覆盖层 ====================
@@ -3655,6 +5707,27 @@ function update(time) {
   }
 
   const p = state.player;
+
+  // ---- 3人队切换系统更新 ----
+  if (state.switchCd > 0) state.switchCd -= dt;
+  if (state.switchInvincible > 0) state.switchInvincible -= dt;
+  if (state.switchAnim > 0) state.switchAnim -= dt;
+  // QTE窗口倒计时
+  if (state.qteWindow > 0) {
+    state.qteWindow -= dt;
+    if (state.qteWindow <= 0) {
+      state.qteWindow = 0;
+      state.qteBtnVisible = false;
+      state.qteCombo = 0; // 超时未点，连携中断
+    }
+  }
+  // 玩家HP同步到party
+  if (state.party.length > 0) {
+    const curSlot = state.party[state.activeSlot];
+    if (curSlot) curSlot.hp = state.player.hp;
+  }
+  // 被动效果：退场画灵
+  applyOffFieldPassives(dt);
 
   // ---- 关卡倒计时 ----
   if (!state.wave.completed && !state.gameOver) {
@@ -4007,21 +6080,32 @@ function update(time) {
 
   // ---- 玩家死亡 ----
   if (state.player.hp <= 0 && !state.gameOver) {
-    state.gameOver = true;
-    state.gameOverTimer = 1.2;
-    showActionText('·墨尽·', p.x, p.y - 60);
-    state.shake.intensity = 3;
-    state.hitStop = 50;
+    // 3人队系统：画灵死亡→尝试切换，全灭才game over
+    if (state.party.length > 1) {
+      handleHeroDeath();
+      if (!state.gameOver) {
+        // 切换成功，继续战斗
+        showActionText('·换灵·', p.x, p.y - 60);
+      }
+    }
+    // 如果game over了或只有1个画灵
+    if (state.player.hp <= 0 && !state.gameOver) {
+      state.gameOver = true;
+      state.gameOverTimer = 1.2;
+      showActionText('·墨尽·', p.x, p.y - 60);
+      state.shake.intensity = 3;
+      state.hitStop = 50;
 
-    for (let i = 0; i < 20; i++) {
-      const a = Math.random() * Math.PI * 2;
-      state.particles.push({
-        x: p.x, y: p.y,
-        vx: Math.cos(a) * (100 + Math.random() * 150),
-        vy: Math.sin(a) * (100 + Math.random() * 150),
-        size: 4 + Math.random() * 6, color: C.INK_BLACK,
-        life: 0.5, maxLife: 0.8, alpha: 1,
-      });
+      for (let i = 0; i < 20; i++) {
+        const a = Math.random() * Math.PI * 2;
+        state.particles.push({
+          x: p.x, y: p.y,
+          vx: Math.cos(a) * (100 + Math.random() * 150),
+          vy: Math.sin(a) * (100 + Math.random() * 150),
+          size: 4 + Math.random() * 6, color: C.INK_BLACK,
+          life: 0.5, maxLife: 0.8, alpha: 1,
+        });
+      }
     }
   }
 
@@ -4086,7 +6170,7 @@ function update(time) {
     rageWashStart();
 
     // ---- 画灵爆发技能 ----
-    if (currentHero.rageSkill === 'rageScatter') {
+    if (getActiveHero().rageSkill === 'rageScatter') {
       // 丹霞·丹青万卷：8方向散射弹
       for (let d = 0; d < 8; d++) {
         const scatterAngle = d * Math.PI / 4 + Math.random() * 0.2;
@@ -4095,7 +6179,7 @@ function update(time) {
           p.y + Math.sin(scatterAngle) * 200, true, state.bulletColorIndex);
       }
       showActionText('·丹青万卷·', p.x, p.y - 80);
-    } else if (currentHero.rageSkill === 'rageShadow') {
+    } else if (getActiveHero().rageSkill === 'rageShadow') {
       // 墨痕·墨影分身：生成2个墨影自动攻击5秒
       state.shadows = [];
       for (let s = 0; s < 2; s++) {
@@ -4108,7 +6192,7 @@ function update(time) {
         });
       }
       showActionText('·墨影分身·', p.x, p.y - 80);
-    } else if (currentHero.rageSkill === 'rageHeal') {
+    } else if (getActiveHero().rageSkill === 'rageHeal') {
       // 青岚·泼墨回春：爆发期间持续回血
       state.rage.healTimer = 0;
       showActionText('·泼墨回春·', p.x, p.y - 80);
@@ -4136,7 +6220,7 @@ function update(time) {
   }
 
   // ---- 青岚爆发回血 ----
-  if (state.rage.active && currentHero.rageSkill === 'rageHeal') {
+  if (state.rage.active && getActiveHero().rageSkill === 'rageHeal') {
     state.rage.healTimer = (state.rage.healTimer || 0) + dt;
     if (state.rage.healTimer >= 1.0) {
       state.rage.healTimer = 0;
@@ -4343,10 +6427,10 @@ function update(time) {
         e.hurtTimer = 0.12;
 
         // ---- 画灵被动触发 ----
-        if (currentHero.passive === 'inkHeal' && !e.alive) {
+        if (getActiveHero().passive === 'inkHeal' && !e.alive) {
           // 青岚·墨愈：击杀回复（在敌人死亡时触发，移到击杀逻辑）
         }
-        if (currentHero.passive === 'critSplash' && isCrit) {
+        if (getActiveHero().passive === 'critSplash' && isCrit) {
           // 丹霞·丹心：暴击时溅墨伤害周围敌人
           for (const otherE of state.enemies) {
             if (otherE === e || !otherE.alive) continue;
@@ -4370,7 +6454,7 @@ function update(time) {
             });
           }
         }
-        if (currentHero.passive === 'bigBullet') {
+        if (getActiveHero().passive === 'bigBullet') {
           // 墨痕·墨守：命中时小范围AOE标记
           for (const otherE of state.enemies) {
             if (otherE === e || !otherE.alive) continue;
@@ -4505,8 +6589,10 @@ function update(time) {
           state.killCount++;
 
           // ---- 画灵被动：青岚·墨愈 ----
-          if (currentHero.passive === 'inkHeal') {
-            state.player.hp = Math.min(state.player.maxHp, state.player.hp + 3);
+          if (getActiveHero().passive === 'inkHeal') {
+            const slot = state.party[state.activeSlot];
+            slot.hp = Math.min(slot.maxHp, slot.hp + 3);
+            state.player.hp = slot.hp;
             spawnDamageNumber(p.x, p.y - 20, '+3', false, '#2d8a4e');
           }
 
@@ -4518,8 +6604,8 @@ function update(time) {
             showActionText('·共鸣提升·', p.x, p.y - 60);
             // 升级时刷新属性
             const bonus = resonance.getBonus();
-            state.heroStats.atk = Math.floor(BULLET_DAMAGE * currentHero.atkMult + bonus.atk);
-            state.heroStats.crit = Math.floor(15 * currentHero.critMult + bonus.crit);
+            state.heroStats.atk = Math.floor(BULLET_DAMAGE * getActiveHero().atkMult + bonus.atk);
+            state.heroStats.crit = Math.floor(15 * getActiveHero().critMult + bonus.crit);
           }
 
           const ex = e.x, ey = e.y;
@@ -4611,15 +6697,18 @@ function update(time) {
       continue;
     }
 
-    // 命中玩家（冲刺无敌期间免伤）
+    // 命中玩家（冲刺无敌/切换无敌期间免伤）
     if (dist(eb.x, eb.y, p.x, p.y) < PLAYER_SIZE + 6) {
       state.enemyBullets.splice(i, 1);
-      if (state.dash.invincible > 0) {
-        // 冲刺无敌 — 弹开+特效
+      if (state.dash.invincible > 0 || state.switchInvincible > 0) {
+        // 无敌 — 弹开+特效
         spawnDirectionalSplash(eb.x, eb.y, 0, C.INK_WASH, 3);
         continue;
       }
-      p.hp -= 8;
+      // 退场被动防御减伤
+      const defMult = getHeroStatsWithPassives().defMult;
+      const rawDmg = 8;
+      p.hp -= Math.max(1, Math.floor(rawDmg * defMult));
       p.hp = Math.max(p.hp, 0);
       playSound('playerHit');
 
@@ -4730,6 +6819,9 @@ function gameLoop(time) {
     case 'title':
       drawTitleScreen();
       break;
+    case 'lobby':
+      drawLobby();
+      break;
     case 'select':
       drawLevelSelect();
       break;
@@ -4760,6 +6852,24 @@ function gameLoop(time) {
     case 'result':
       drawResultScreen();
       break;
+    case 'heroList':
+      drawHeroList();
+      break;
+    case 'heroDetail':
+      drawHeroDetail();
+      break;
+    case 'gacha':
+      drawGacha();
+      break;
+    case 'gachaResult':
+      drawGachaResult();
+      break;
+    case 'shop':
+      drawShop();
+      break;
+    case 'settings':
+      drawSettings();
+      break;
   }
 
   requestAnimationFrame(gameLoop);
@@ -4770,3 +6880,14 @@ console.log('水墨丹青 - 核心战斗原型已启动');
 screenState.current = 'title';
 screenState.titleFadeIn = 0;
 requestAnimationFrame(gameLoop);
+
+// ==================== 自适应缩放 ====================
+// 窗口变化时重算Canvas CSS尺寸，container自动包裹
+function resizeGame() {
+  const { dw, dh } = calcDisplaySize();
+  canvas.style.width = dw + 'px';
+  canvas.style.height = dh + 'px';
+  paintCanvasEl.style.width = dw + 'px';
+  paintCanvasEl.style.height = dh + 'px';
+}
+window.addEventListener('resize', resizeGame);
