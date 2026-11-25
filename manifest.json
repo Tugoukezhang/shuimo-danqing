@@ -1,0 +1,88 @@
+{
+  "type": "cat-kitchen room-defense reconstruction",
+  "stage": "playable checkpoint",
+  "cipher_sha256": "b03b4f78d2ff0094fe5a8572860dfb626b5bd29c2630197aa5a60a6b14f21f4c",
+  "zip_sha256": "7d67c0b5f5620b88c3ab1ae6d387cd60043719a7dddbd42e35f8d3c37eaaf12f",
+  "parts": [
+    {
+      "path": "part-000.gpgpart",
+      "sha": "dd05cd5f2f56e426a7e577a6d87ce046d824b34b",
+      "size": 393216
+    },
+    {
+      "path": "part-001.gpgpart",
+      "sha": "be9f51285fc7fa5b8a72eca233ad87db5d54c0f5",
+      "size": 393216
+    },
+    {
+      "path": "part-002.gpgpart",
+      "sha": "4eec85fbde19561d59000a0daa84325c996f620b",
+      "size": 393216
+    },
+    {
+      "path": "part-003.gpgpart",
+      "sha": "f046420ee7ab01e75ba1f059af8cd052042c25e2",
+      "size": 393216
+    },
+    {
+      "path": "part-004.gpgpart",
+      "sha": "5af15d9af82f8f1617fd08d23b5b011d4c7a89b1",
+      "size": 393216
+    },
+    {
+      "path": "part-005.gpgpart",
+      "sha": "71a888dacf52c55403c8b84a72657e68c7e62ed4",
+      "size": 393216
+    },
+    {
+      "path": "part-006.gpgpart",
+      "sha": "128cf087d0facfec4f8141eee8f9f03aa2493998",
+      "size": 393216
+    },
+    {
+      "path": "part-007.gpgpart",
+      "sha": "f36f9faac1642d43de128d3693d349e3a575d578",
+      "size": 393216
+    },
+    {
+      "path": "part-008.gpgpart",
+      "sha": "8d498381be14501947bb5926e45df1bb37c32a3a",
+      "size": 393216
+    },
+    {
+      "path": "part-009.gpgpart",
+      "sha": "f992be824f49a0572d58c3220e0012bfe7912085",
+      "size": 393216
+    },
+    {
+      "path": "part-010.gpgpart",
+      "sha": "7b44e01aaa38fc75339a59945cde3165745812d3",
+      "size": 393216
+    },
+    {
+      "path": "part-011.gpgpart",
+      "sha": "4750be13d81342b1319189cc22b0276cd23cca1d",
+      "size": 393216
+    },
+    {
+      "path": "part-012.gpgpart",
+      "sha": "99567dedd74f7411978dfaf009915967227c3c5d",
+      "size": 393216
+    },
+    {
+      "path": "part-013.gpgpart",
+      "sha": "1215cb903571ea027fb6577a755b45548cfaad4c",
+      "size": 393216
+    },
+    {
+      "path": "part-014.gpgpart",
+      "sha": "5c3b9e2f75878a52cbacbfc1ebeaf27270d9584a",
+      "size": 393216
+    },
+    {
+      "path": "part-015.gpgpart",
+      "sha": "2f6031e5ada12fe6e552e1aeab7f053b7358829a",
+      "size": 42051
+    }
+  ]
+}
