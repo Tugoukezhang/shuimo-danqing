@@ -7,8 +7,8 @@ p.add_argument('--key',type=Path,required=True)
 p.add_argument('--out',type=Path,required=True)
 a=p.parse_args()
 root=Path(__file__).resolve().parent
-data=b''.join(f.read_bytes() for f in sorted(root.glob('r8-part-*.aes')))
+data=b''.join(f.read_bytes() for f in sorted(root.glob('r9-part-*.aes')))
 cipher=AESGCM(hashlib.sha256(base64.b64decode(a.key.read_bytes())).digest())
-plain=cipher.decrypt(data[:12],data[12:],b'kitchen-R8')
-assert hashlib.sha256(plain).hexdigest()=='fcba0c094afd51e977faa1beb2358dde311d2611304f5206581a50aa48e31a42'
+plain=cipher.decrypt(data[:12],data[12:],b'kitchen-R9')
+assert hashlib.sha256(plain).hexdigest()=='80828a13a3702d575ed3e4030e7a9285cf5ef03e11af9649cd6a5c13ce10ecd2'
 with a.out.open('xb') as f:f.write(plain)
