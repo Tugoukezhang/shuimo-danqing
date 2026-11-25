@@ -1,138 +1,153 @@
 {
   "type": "cat-kitchen room-defense reconstruction",
-  "stage": "R2 art and gameplay review",
-  "cipher_sha256": "6a7b4b9d57f81c84194994b79486f225df7f0a26d717ea9530412486ec98f26e",
-  "zip_sha256": "567bff3babb43ba727cbe6ae4094d98d4bf51c201631debe25c7df1218d4505d",
+  "stage": "R3 verified mechanics and atlas review",
+  "cipher_sha256": "f26339f19fff8fbce89bcbd9fa899b8bfb50f13bae6b1738f65a1ba709079d6d",
+  "zip_sha256": "bc61c60104f430e87a7dfb386057c46f473727ac2cc9b62cf33c2ef10e878ceb",
   "parts": [
     {
       "path": "part-000.gpgpart",
-      "sha": "3f7951846ea65b1f353333f852f86b32ab352226",
+      "sha": "9ed22c9eadc641cf0a9b05a47baf716c7162038b",
       "size": 393216
     },
     {
       "path": "part-001.gpgpart",
-      "sha": "9e8e88ffc972fa3d78133a9e188c1244f648dfc5",
+      "sha": "83a2d49d463618a1175384274af6199c41ccff3a",
       "size": 393216
     },
     {
       "path": "part-002.gpgpart",
-      "sha": "adb6deb6c2277dcc30cc0143a427dafdf8248d5f",
+      "sha": "c0960a97bcad842830fdb6af5b78ca5815aea42e",
       "size": 393216
     },
     {
       "path": "part-003.gpgpart",
-      "sha": "66a411bca57df83a4dea9eea128d5041192f8064",
+      "sha": "4202081f0b66ec3117cd34bf32b97e9ca9d07bfc",
       "size": 393216
     },
     {
       "path": "part-004.gpgpart",
-      "sha": "48fd4e3fb6b315363d6a7e5efeaa9b3754c9e681",
+      "sha": "6e4bad520615b4f4fd30e5a2cfa80e957172f711",
       "size": 393216
     },
     {
       "path": "part-005.gpgpart",
-      "sha": "ec79537cbdbc4a83dd7054e1efeeb54b0db78e24",
+      "sha": "7734191b8d6aa59d65d65ed998941971db684a96",
       "size": 393216
     },
     {
       "path": "part-006.gpgpart",
-      "sha": "6b7a5a4389c81f9ce75cdf22e0b1401bce7e2829",
+      "sha": "402d64b7b71681089dbbf1736236764019c53f20",
       "size": 393216
     },
     {
       "path": "part-007.gpgpart",
-      "sha": "7742943b07d59f3b67972dfeb1227331345058d5",
+      "sha": "84b1dee4288e32f8d12557af6a3d0483dad7a42d",
       "size": 393216
     },
     {
       "path": "part-008.gpgpart",
-      "sha": "b20788ff8de18cf2c14009e6e56dc25ca51c3f83",
+      "sha": "2b0ee9c1fa99897d54654c7fbb971a76a734a0a0",
       "size": 393216
     },
     {
       "path": "part-009.gpgpart",
-      "sha": "02c296fbaf192006f75bd0532b329ba31f727abf",
+      "sha": "e1f506d3affdf78813c0e30823b31978010d18c9",
       "size": 393216
     },
     {
       "path": "part-010.gpgpart",
-      "sha": "a6b973422548b5b2a8e6808e43f5ed449dd2e73f",
+      "sha": "d5f34191fd82c2401de1ebd6ff790305caa3b44e",
       "size": 393216
     },
     {
       "path": "part-011.gpgpart",
-      "sha": "5503cef909c7e4c3acfbe9ec43ddc66498d4e9ad",
+      "sha": "b9863d2da54eec55e4d0f3d13994a456d826987e",
       "size": 393216
     },
     {
       "path": "part-012.gpgpart",
-      "sha": "f915d9128b5e2ef3c18e68c3beb444868561fa9b",
+      "sha": "78854f63b9b7ecbdaaee36b737b6600e22f02346",
       "size": 393216
     },
     {
       "path": "part-013.gpgpart",
-      "sha": "7d8f5a4a82458e62538f3ac371c9101330c5a513",
+      "sha": "89819117ddc4e23094a07f2a1d2aa585a53e68af",
       "size": 393216
     },
     {
       "path": "part-014.gpgpart",
-      "sha": "502f1a73537b54678c1f26cc803d4bfa029764ff",
+      "sha": "c813cafb3bb3b30d695869f995c2277dd0059d8e",
       "size": 393216
     },
     {
       "path": "part-015.gpgpart",
-      "sha": "b6caa2c6657e058f4156ccf37ecd8c72c09bf0e2",
+      "sha": "0d372b2efa7ac9f58a626bb31570f879e2c89d60",
       "size": 393216
     },
     {
       "path": "part-016.gpgpart",
-      "sha": "b1b5c21623a9e0078b6e69e56e475cef40ec5526",
+      "sha": "7e1fceaadf22877c71342860d9e3e5fa6f4cdfec",
       "size": 393216
     },
     {
       "path": "part-017.gpgpart",
-      "sha": "d989302ba2b57c42200074096638621c125e25d2",
+      "sha": "9cf798421fb265af3b1ea2c24a58a088f81bd126",
       "size": 393216
     },
     {
       "path": "part-018.gpgpart",
-      "sha": "ba802e2966fb8fc8c4b46c1e6367405507a1ea5e",
+      "sha": "1a93f69ad19f3a0aeb7e4bde3d0b3f618ab528bd",
       "size": 393216
     },
     {
       "path": "part-019.gpgpart",
-      "sha": "9abc97bfe238825fdfe4d88b358052532128bc81",
+      "sha": "2125801453479b89f40c96399347427d71ab60ea",
       "size": 393216
     },
     {
       "path": "part-020.gpgpart",
-      "sha": "6b34ad7b078f1b7f1cfa0cb39968b5430f43972c",
+      "sha": "20e8a0a388b74156025c0ffa337b8ee8cf4aa900",
       "size": 393216
     },
     {
       "path": "part-021.gpgpart",
-      "sha": "5b828a91310159a7820973087c95e612b2ea250c",
+      "sha": "fd234065d9ad96c98d801ba78031032b858d68f7",
       "size": 393216
     },
     {
       "path": "part-022.gpgpart",
-      "sha": "65b15c9f4a4e5f2ab024821fcade70e5006d015e",
+      "sha": "1717ae5b1ff8396af0c136e528299fa725295955",
       "size": 393216
     },
     {
       "path": "part-023.gpgpart",
-      "sha": "8d1b0421bd6f8f900dac776e22472cf2993ce694",
+      "sha": "b5e9c7518cb7eabf1fced7ece41b1f0f313533e2",
       "size": 393216
     },
     {
       "path": "part-024.gpgpart",
-      "sha": "2122b7840932e3204c295ae722d561aa084931fb",
+      "sha": "635508b6e89cf43c532faa082654569c4a68f328",
       "size": 393216
     },
     {
       "path": "part-025.gpgpart",
-      "sha": "d88acee74f86e86c2d4d01c1b3ab06a0729b0a86",
-      "size": 357156
+      "sha": "f3400fdbb75d48d272c9f15bd17c0e8955fa7dbb",
+      "size": 393216
+    },
+    {
+      "path": "part-026.gpgpart",
+      "sha": "427dc848a2029519134b26e5cc86598cbacbc5f5",
+      "size": 393216
+    },
+    {
+      "path": "part-027.gpgpart",
+      "sha": "657d737f9bf037f8a3be0390e1e5d2c5563c6c94",
+      "size": 393216
+    },
+    {
+      "path": "part-028.gpgpart",
+      "sha": "834ee37dd2b0d3caa11778ffbfa822d818c793b9",
+      "size": 40660
     }
   ]
 }
